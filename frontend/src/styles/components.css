@@ -3872,3 +3872,142 @@
 .data-table tr.tb-row-selected > td {
   background: #EFF6FF;
 }
+
+/* =========================================================
+   Import Progress Modal — circular progress (NTS)
+   ========================================================= */
+.import-progress-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 1000;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: rgba(15, 23, 42, 0.55);
+  backdrop-filter: blur(3px);
+  padding: 20px;
+}
+.import-progress-card {
+  background: #ffffff;
+  border-radius: 20px;
+  padding: 30px 34px 26px;
+  width: 100%;
+  max-width: 340px;
+  text-align: center;
+  box-shadow: 0 24px 60px rgba(15, 23, 42, 0.3);
+  animation: ipc-pop 180ms ease;
+}
+@keyframes ipc-pop { from { transform: scale(0.94); opacity: 0; } to { transform: scale(1); opacity: 1; } }
+
+.ipc-ring-wrap { position: relative; width: 150px; height: 150px; margin: 0 auto 16px; }
+.ipc-ring { width: 150px; height: 150px; transform: rotate(-90deg); }
+.ipc-track { fill: none; stroke: #E2E8F0; stroke-width: 10; }
+.ipc-bar {
+  fill: none;
+  stroke: #3B82F6;
+  stroke-width: 10;
+  stroke-linecap: round;
+  transition: stroke-dashoffset 0.4s ease;
+}
+.ipc-center {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+}
+.ipc-pct { font-size: 2rem; font-weight: 800; color: #1D4ED8; line-height: 1; letter-spacing: -1px; }
+.ipc-sub { font-size: 0.7rem; color: #64748B; text-transform: uppercase; letter-spacing: 1px; margin-top: 4px; }
+
+.ipc-title { font-size: 1.05rem; font-weight: 700; color: #0F172A; }
+.ipc-count { font-size: 0.85rem; color: #475569; margin-top: 4px; }
+.ipc-count strong { color: #1D4ED8; }
+
+.ipc-meta { display: flex; gap: 12px; margin-top: 18px; }
+.ipc-metacell {
+  flex: 1;
+  background: #F6F8FC;
+  border: 1px solid #E2E8F0;
+  border-radius: 12px;
+  padding: 10px 6px;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.ipc-metaval { font-size: 1.05rem; font-weight: 700; color: #0F172A; font-variant-numeric: tabular-nums; }
+.ipc-metalbl { font-size: 0.65rem; color: #64748B; text-transform: uppercase; letter-spacing: 0.5px; }
+
+.ipc-hint { margin-top: 16px; font-size: 0.75rem; color: #94A3B8; line-height: 1.4; }
+
+/* =========================================================
+   Import Summary Modal (NTS)
+   ========================================================= */
+.import-summary-overlay {
+  position: fixed; inset: 0; z-index: 1001;
+  display: flex; align-items: center; justify-content: center;
+  background: rgba(15, 23, 42, 0.55); backdrop-filter: blur(3px); padding: 20px;
+}
+.import-summary-card {
+  position: relative; background: #ffffff; border-radius: 20px;
+  padding: 28px 28px 22px; width: 100%; max-width: 520px; text-align: center;
+  box-shadow: 0 24px 60px rgba(15, 23, 42, 0.3); animation: ipc-pop 180ms ease;
+  max-height: 86vh; display: flex; flex-direction: column;
+}
+.ism-close {
+  position: absolute; top: 12px; right: 12px; background: transparent; border: none;
+  color: #94A3B8; cursor: pointer; padding: 6px; border-radius: 8px; line-height: 0;
+}
+.ism-close:hover { background: #F1F5F9; color: #0F172A; }
+
+.ism-badge {
+  width: 58px; height: 58px; border-radius: 50%; margin: 2px auto 12px;
+  display: grid; place-items: center;
+}
+.ism-badge.ok { background: #DCFCE7; color: #16A34A; }
+.ism-badge.warn { background: #FEF3C7; color: #D97706; }
+
+.ism-title { font-size: 1.15rem; font-weight: 700; color: #0F172A; margin: 0; }
+.ism-sub { font-size: 0.82rem; color: #64748B; margin: 4px 0 0; }
+
+.ism-stats { display: flex; gap: 10px; margin: 18px 0 4px; }
+.ism-stat {
+  flex: 1; background: #F6F8FC; border: 1px solid #E2E8F0; border-radius: 12px;
+  padding: 12px 6px; display: flex; flex-direction: column; gap: 2px; min-width: 0;
+}
+.ism-stat.ok { background: #F0FDF4; border-color: #BBF7D0; }
+.ism-stat.warn { background: #FFFBEB; border-color: #FDE68A; }
+.ism-num { font-size: 1.5rem; font-weight: 800; color: #0F172A; font-variant-numeric: tabular-nums; line-height: 1.1; }
+.ism-stat.ok .ism-num { color: #16A34A; }
+.ism-stat.warn .ism-num { color: #D97706; }
+.ism-lbl { font-size: 0.66rem; color: #64748B; text-transform: uppercase; letter-spacing: 0.4px; }
+
+.ism-failure {
+  margin-top: 14px; background: #FEF2F2; border: 1px solid #FECACA; color: #B91C1C;
+  border-radius: 10px; padding: 10px 12px; font-size: 0.8rem; text-align: left;
+}
+
+.ism-errors { margin-top: 16px; text-align: left; min-height: 0; display: flex; flex-direction: column; }
+.ism-errors-head {
+  font-size: 0.72rem; font-weight: 700; text-transform: uppercase; letter-spacing: 0.5px;
+  color: #92400E; margin-bottom: 6px;
+}
+.ism-errors-list {
+  border: 1px solid #E2E8F0; border-radius: 10px; overflow-y: auto; max-height: 190px; background: #FCFDFF;
+}
+.ism-err {
+  display: grid; grid-template-columns: 62px 1fr 1.4fr; gap: 8px; align-items: center;
+  padding: 7px 10px; border-bottom: 1px solid #EEF2F7; font-size: 0.76rem;
+}
+.ism-err:last-child { border-bottom: none; }
+.ism-err-row { font-weight: 700; color: #64748B; font-variant-numeric: tabular-nums; }
+.ism-err-name { font-weight: 600; color: #0F172A; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.ism-err-reason { color: #B45309; }
+.ism-more { justify-content: center; color: #64748B; grid-template-columns: 1fr; text-align: center; }
+
+.ism-actions { display: flex; gap: 10px; justify-content: center; margin-top: 18px; flex-wrap: wrap; }
+
+@media (max-width: 520px) {
+  .ism-err { grid-template-columns: 54px 1fr; }
+  .ism-err-reason { grid-column: 1 / -1; }
+}

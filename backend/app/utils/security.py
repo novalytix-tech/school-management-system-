@@ -15,9 +15,27 @@ ph = PasswordHasher(
 )
 
 
+# Lighter Argon2id profile (OWASP minimum: m=19 MiB, t=2, p=1) used ONLY for
+# system-generated temporary passwords that the user must change at first login.
+# Argon2 stores its cost parameters inside the hash string, so verify_password()
+# validates these hashes unchanged — only creation is cheaper.
+ph_temp = PasswordHasher(
+    time_cost=2,
+    memory_cost=19456,
+    parallelism=1,
+    hash_len=32,
+    salt_len=16,
+)
+
+
 def hash_password(plain_password: str) -> str:
     """Generate an Argon2id salted hash for a plain password."""
     return ph.hash(plain_password)
+
+
+def hash_temp_password(plain_password: str) -> str:
+    """Hash a system-generated temporary password (cheaper profile, must-change-on-login)."""
+    return ph_temp.hash(plain_password)
 
 
 def verify_password(plain_password: str, hashed_password: str) -> bool:

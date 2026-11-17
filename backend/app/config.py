@@ -30,11 +30,23 @@ class BaseConfig:
     # SQLAlchemy
     SQLALCHEMY_DATABASE_URI = os.getenv("DATABASE_URL") if DATABASE_ENABLED else None
     SQLALCHEMY_TRACK_MODIFICATIONS = False
+    # Connection pool. Opening a fresh TLS connection to a managed/remote Postgres
+    # costs several seconds, so connections are kept warm for much longer and TCP
+    # keepalives stop idle ones being dropped by the network in between.
     SQLALCHEMY_ENGINE_OPTIONS = {
         "pool_pre_ping": True,
-        "pool_recycle": 300,
+        "pool_recycle": 1800,          # 30 min (was 5 min → reconnect storms)
         "pool_size": 10,
         "max_overflow": 20,
+        "pool_timeout": 30,
+        "connect_args": {
+            "keepalives": 1,
+            "keepalives_idle": 30,
+            "keepalives_interval": 10,
+            "keepalives_count": 5,
+            "connect_timeout": 15,
+            "application_name": "school-erp",
+        },
     }
 
     # Development/test authentication (database-free). Only honoured when

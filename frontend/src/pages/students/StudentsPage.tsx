@@ -31,6 +31,8 @@ import { ListToolbar } from '../../components/common/ListToolbar';
 import { pickField } from '../../utils/csv';
 import { exportToCSV } from '../../utils/export';
 import { httpClient } from '../../services/api/httpClient';
+import { ImportProgressModal, ImportProgressState } from '../../components/common/ImportProgressModal';
+import { ImportSummaryModal, ImportSummary, ImportRowError } from '../../components/common/ImportSummaryModal';
 import { Eye, Edit, Trash2, Power, RotateCcw } from 'lucide-react';
 
 /**
@@ -99,6 +101,9 @@ const StudentDirectoryManager: React.FC = () => {
   const [currentPage, setCurrentPage] = useState(1);
   const [pageSize, setPageSize] = useState(25);
   const [selectedIds, setSelectedIds] = useState<string[]>([]);
+  const [importProgress, setImportProgress] = useState<ImportProgressState | null>(null);
+  const [importSummary, setImportSummary] = useState<ImportSummary | null>(null);
+  const [downloadCredsFn, setDownloadCredsFn] = useState<(() => void) | null>(null);
 
   useEffect(() => {
     setCurrentPage(1);
@@ -389,44 +394,73 @@ const StudentDirectoryManager: React.FC = () => {
       return;
     }
 
-    addToast('info', 'Importing…', `Saving ${rows.length} student(s) to the database and generating logins…`);
+    // Larger batches mean fewer server round-trips; the ring still advances per batch.
+    type ImpCred = { name: string; admissionNo: string; className: string; section: string; loginId: string; temporaryPassword: string };
+    const BATCH = 100;
+    const started = Date.now();
+    setImportProgress({ active: true, done: 0, total: rows.length, startedAt: started, label: 'Importing Students' });
+
+    const allCreated: Student[] = [];
+    const allCreds: ImpCred[] = [];
+    const allErrors: ImportRowError[] = [];
+    let imported = 0;
+    let skipped = 0;
+    let errorMsg = '';
+
     try {
-      const res = await httpClient.post<{
-        created: Student[];
-        credentials: { name: string; admissionNo: string; className: string; section: string; loginId: string; temporaryPassword: string }[];
-        imported: number;
-        skipped: number;
-      }>('/students/bulk-import', { students: rows });
-
-      if (!res?.success || !res.data) {
-        throw new Error(res?.error?.message || res?.message || 'Import failed.');
+      for (let i = 0; i < rows.length; i += BATCH) {
+        const chunk = rows.slice(i, i + BATCH);
+        const res = await httpClient.post<{
+          created: Student[];
+          credentials: ImpCred[];
+          errors: ImportRowError[];
+          imported: number;
+          skipped: number;
+        }>('/students/bulk-import', { students: chunk, rowOffset: i });
+        if (!res?.success || !res.data) {
+          throw new Error(res?.error?.message || res?.message || 'Import failed.');
+        }
+        allCreated.push(...(res.data.created || []));
+        allCreds.push(...(res.data.credentials || []));
+        allErrors.push(...(res.data.errors || []));
+        imported += res.data.imported || 0;
+        skipped += res.data.skipped || 0;
+        setImportProgress(p => (p ? { ...p, done: Math.min(i + BATCH, rows.length) } : p));
       }
-      const { created, credentials, imported, skipped } = res.data;
-
-      // Instant UI update (students already persisted in the database) — no refresh needed.
-      studentService.addLocalBatch(created || []);
-      setStudents([...studentService.getAll()]);
-
-      // Download a credentials CSV so the admin can distribute Login IDs + passwords.
-      if (credentials && credentials.length > 0) {
-        exportToCSV(
-          'Student_Login_Credentials',
-          ['Student Name', 'Admission No', 'Class', 'Section', 'Login ID', 'Temporary Password'],
-          credentials.map(c => [c.name, c.admissionNo, c.className, c.section, c.loginId, c.temporaryPassword])
-        );
-      }
-      addToast(
-        imported > 0 ? 'success' : 'warning',
-        'Import Complete',
-        `${imported} student(s) saved to database${skipped ? `, ${skipped} skipped` : ''}. ${credentials?.length || 0} login credential(s) downloaded as CSV.`
-      );
+      setImportProgress(p => (p ? { ...p, done: rows.length, phase: 'done' } : p));
     } catch (err) {
-      addToast(
-        'error',
-        'Import Failed',
-        (err instanceof Error && err.message) || 'Could not reach the server. Ensure the backend is running and you are logged in as an administrator.'
-      );
+      errorMsg = (err instanceof Error && err.message) || 'Could not reach the server.';
     }
+
+    // Finalize with whatever succeeded (completed batches are already saved in the DB).
+    if (allCreated.length > 0) {
+      studentService.addLocalBatch(allCreated);
+      setStudents([...studentService.getAll()]);
+    }
+    const downloadCreds = () => {
+      if (allCreds.length === 0) return;
+      exportToCSV(
+        'Student_Login_Credentials',
+        ['Student Name', 'Admission No', 'Class', 'Section', 'Login ID', 'Temporary Password'],
+        allCreds.map(c => [c.name, c.admissionNo, c.className, c.section, c.loginId, c.temporaryPassword])
+      );
+    };
+    downloadCreds();
+
+    // Close the progress ring, then show the full summary report.
+    setTimeout(() => {
+      setImportProgress(null);
+      setImportSummary({
+        imported,
+        skipped,
+        credentials: allCreds.length,
+        errors: allErrors,
+        durationSec: (Date.now() - started) / 1000,
+        failure: errorMsg || undefined,
+      });
+      setDownloadCredsFn(() => downloadCreds);
+    }, errorMsg ? 250 : 800);
+
     setSelectedIds([]);
   };
 
@@ -480,6 +514,16 @@ const StudentDirectoryManager: React.FC = () => {
 
   return (
     <div>
+      <ImportProgressModal state={importProgress} />
+      <ImportSummaryModal
+        summary={importSummary}
+        onClose={() => {
+          setImportSummary(null);
+          setDownloadCredsFn(null);
+        }}
+        onDownloadCredentials={downloadCredsFn || undefined}
+      />
+
       {/* Page Header */}
       <div className="page-header">
         <div className="page-title-group">

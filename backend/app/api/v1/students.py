@@ -1,9 +1,12 @@
+import os
+import time
 import uuid
 import secrets
-from datetime import date, datetime
+from concurrent.futures import ThreadPoolExecutor
+from datetime import date, datetime, timezone
 from flask import Blueprint, request, jsonify, current_app
 from flask_jwt_extended import jwt_required, get_jwt
-from sqlalchemy import or_, and_
+from sqlalchemy import or_, and_, insert as sa_insert
 from app.extensions import db
 from app.models import (
     Student, Parent, StudentParent, StudentEnrollment, StudentPromotion,
@@ -191,6 +194,44 @@ def get_student(student_id):
     }), 200
 
 
+_LOOKUP_CACHE = {"key": None, "at": 0.0, "value": None}
+_LOOKUP_TTL = 60.0  # seconds
+
+
+def _import_lookups(institution_id):
+    """Sections map, student role id and active academic year — cached briefly."""
+    from app.models.user import Role
+
+    now = time.time()
+    cache = _LOOKUP_CACHE
+    if cache["value"] and cache["key"] == str(institution_id) and (now - cache["at"]) < _LOOKUP_TTL:
+        return cache["value"]
+
+    sections_map = {}
+    for sec_id, sec_name, cls_name in (
+        db.session.query(Section.id, Section.name, ClassLevel.name)
+        .join(ClassLevel, Section.class_level_id == ClassLevel.id)
+        .filter(ClassLevel.institution_id == institution_id)
+        .all()
+    ):
+        sections_map[((cls_name or "").strip().lower(), (sec_name or "").strip().lower())] = sec_id
+
+    role = Role.query.filter_by(name="student").first()
+    year = (
+        AcademicYear.query.filter_by(institution_id=institution_id, is_current=True).first()
+        or AcademicYear.query.filter_by(institution_id=institution_id).first()
+    )
+
+    value = (
+        sections_map,
+        role.id if role else None,
+        year.id if year else None,
+        year.name if year else "2026-2027",
+    )
+    _LOOKUP_CACHE.update({"key": str(institution_id), "at": now, "value": value})
+    return value
+
+
 def _gen_temp_password() -> str:
     chars = "ABCDEFGHJKLMNPQRSTUVWXYZ"
     nums = "23456789"
@@ -206,16 +247,17 @@ def _gen_temp_password() -> str:
 @students_bp.route("/bulk-import", methods=["POST"])
 def bulk_import_students():
     """
-    Bulk-create students from imported rows. For EACH student this creates:
-      - a User login account (username = admission number, unique temp password, must_change_password)
-      - the Student record (linked to the user)
-      - a best-effort class enrollment (if the class + section exist)
-    Returns the created students (frontend shape) + a credentials list for distribution.
+    Bulk-create students from imported rows.
+
+    Performance: every lookup is pre-loaded in a fixed number of queries and all
+    uniqueness checks run in memory, primary keys are generated client-side so no
+    per-row FLUSH is needed, password hashing runs on a thread pool, and the whole
+    batch is written in a single COMMIT. Cost is O(1) round-trips, not O(rows).
     """
     if not current_app.config.get("DATABASE_ENABLED", False):
         raise APIException("Database is not enabled.", status_code=503, error_code="DATABASE_UNAVAILABLE")
 
-    from app.utils.security import hash_password
+    from app.utils.security import hash_temp_password
     from app.models.user import Role, UserRole
 
     institution_id = get_current_tenant_id(required=True)
@@ -224,62 +266,63 @@ def bulk_import_students():
     if not isinstance(rows, list) or not rows:
         raise APIException("No student rows provided.", status_code=400, error_code="NO_ROWS")
 
-    student_role = Role.query.filter_by(name="student").first()
-    active_year = (
-        AcademicYear.query.filter_by(institution_id=institution_id, is_current=True).first()
-        or AcademicYear.query.filter_by(institution_id=institution_id).first()
-    )
+    row_offset = int(body.get("rowOffset") or 0)  # keeps CSV row numbers correct across batches
 
-    created, credentials = [], []
-    imported = 0
-    skipped = 0
+    # ---------- Bulk pre-load: fixed number of queries, never per row ----------
+    existing_adm = {
+        (a or "").strip().lower()
+        for (a,) in db.session.query(Student.admission_number).filter(
+            Student.institution_id == institution_id
+        ).all()
+    }
+    existing_usernames, existing_emails = set(), set()
+    for uname, mail in db.session.query(User.username, User.email).all():
+        if uname:
+            existing_usernames.add(uname.strip().lower())
+        if mail:
+            existing_emails.add(mail.strip().lower())
 
-    for row in rows:
+    # Sections / role / academic year change rarely, so they are cached briefly and
+    # cost zero round-trips on every batch after the first.
+    sections_map, student_role_id, year_id, year_name = _import_lookups(institution_id)
+
+    # ---------- Validate + prepare entirely in memory ----------
+    prepared, errors = [], []
+    for i, row in enumerate(rows):
+        csv_row = row_offset + i + 2  # +2: header line plus 1-based numbering
+
         full_name = (row.get("fullName") or row.get("full_name") or row.get("name") or "").strip()
         if not full_name:
-            skipped += 1
+            errors.append({"row": csv_row, "name": "", "reason": "Name is missing"})
             continue
 
         parts = full_name.split(" ")
-        first_name = row.get("firstName") or parts[0] or full_name
-        last_name = row.get("lastName") or (" ".join(parts[1:]) if len(parts) > 1 else first_name)
+        first_name = (row.get("firstName") or parts[0] or full_name).strip()
+        last_name = (row.get("lastName") or (" ".join(parts[1:]) if len(parts) > 1 else first_name)).strip()
 
         admission_no = (row.get("admissionNo") or row.get("admission_number") or "").strip()
         if not admission_no:
-            admission_no = f"ADM-{secrets.token_hex(3).upper()}"
-
-        # Skip duplicates (already in this institution)
-        if Student.query.filter_by(institution_id=institution_id, admission_number=admission_no).first():
-            skipped += 1
+            admission_no = "ADM-" + secrets.token_hex(3).upper()
+        if admission_no.lower() in existing_adm:
+            errors.append({
+                "row": csv_row,
+                "name": full_name,
+                "reason": "Duplicate admission number '" + admission_no + "'",
+            })
             continue
+        existing_adm.add(admission_no.lower())
 
-        # Unique username (default = admission number)
         username = (row.get("loginId") or admission_no).strip()
-        if User.query.filter_by(username=username).first():
-            username = f"{username}-{secrets.token_hex(2)}"
+        while username.lower() in existing_usernames:
+            username = admission_no + "-" + secrets.token_hex(2)
+        existing_usernames.add(username.lower())
 
         email = (row.get("parentEmail") or row.get("email") or "").strip().lower()
-        if not email or User.query.filter_by(email=email).first():
-            email = f"{username.lower()}@student.local"
-
-        temp_password = _gen_temp_password()
-
-        user_obj = User(
-            institution_id=institution_id,
-            username=username,
-            email=email,
-            password_hash=hash_password(temp_password),
-            first_name=first_name,
-            last_name=last_name,
-            phone=row.get("parentPhone") or row.get("phone"),
-            is_active=True,
-            is_verified=True,
-            must_change_password=True,
-        )
-        db.session.add(user_obj)
-        db.session.flush()
-        if student_role:
-            db.session.add(UserRole(user_id=user_obj.id, role_id=student_role.id))
+        if not email or email in existing_emails:
+            email = username.lower() + "@student.local"
+            while email in existing_emails:
+                email = username.lower() + "-" + secrets.token_hex(2) + "@student.local"
+        existing_emails.add(email)
 
         dob = row.get("dob") or row.get("date_of_birth")
         try:
@@ -287,82 +330,152 @@ def bulk_import_students():
         except ValueError:
             dob_val = date(2012, 1, 1)
 
-        student = Student(
-            institution_id=institution_id,
-            user_id=user_obj.id,
-            admission_number=admission_no,
-            admission_date=date.today(),
-            date_of_birth=dob_val,
-            gender=(row.get("gender") or "OTHER").upper(),
-            blood_group=row.get("bloodGroup") or row.get("blood_group"),
-            nationality="Indian",
-            caste_category="GENERAL",
-            status="ACTIVE",
-        )
-        db.session.add(student)
-        db.session.flush()
-
-        # Best-effort enrollment if the class + section exist
-        class_name = (row.get("className") or row.get("class") or "").strip()
-        section_name = (row.get("section") or "").strip()
-        if active_year and class_name and section_name:
-            sec = (
-                Section.query.join(ClassLevel)
-                .filter(
-                    ClassLevel.institution_id == institution_id,
-                    ClassLevel.name == class_name,
-                    Section.name == section_name,
-                )
-                .first()
-            )
-            if sec:
-                db.session.add(StudentEnrollment(
-                    student_id=student.id,
-                    academic_year_id=active_year.id,
-                    section_id=sec.id,
-                    roll_number=row.get("rollNo") or row.get("roll_number"),
-                    enrollment_date=date.today(),
-                    status="ACTIVE",
-                ))
-
-        imported += 1
-        created.append({
-            "id": str(student.id),
-            "admissionNo": admission_no,
-            "firstName": first_name,
-            "lastName": last_name,
-            "fullName": full_name,
-            "gender": (row.get("gender") or "Male"),
-            "dob": dob_val.isoformat(),
-            "bloodGroup": row.get("bloodGroup") or "",
-            "classId": row.get("classId") or "",
-            "className": class_name,
-            "section": section_name or "A",
-            "rollNo": str(row.get("rollNo") or ""),
-            "academicYear": active_year.name if active_year else "2026-2027",
-            "admissionDate": date.today().isoformat(),
-            "parentName": row.get("parentName") or "Guardian",
-            "parentPhone": row.get("parentPhone") or "",
-            "parentEmail": row.get("parentEmail") or "",
+        prepared.append({
+            "full_name": full_name, "first_name": first_name, "last_name": last_name,
+            "admission_no": admission_no, "username": username, "email": email,
+            "dob": dob_val,
+            "gender": (row.get("gender") or "OTHER"),
+            "blood_group": row.get("bloodGroup") or row.get("blood_group"),
+            "phone": row.get("parentPhone") or row.get("phone"),
+            "class_name": (row.get("className") or row.get("class") or "").strip(),
+            "section": (row.get("section") or "").strip(),
+            "roll_no": row.get("rollNo") or row.get("roll_number"),
+            "parent_name": row.get("parentName") or "Guardian",
+            "parent_email": row.get("parentEmail") or "",
             "address": row.get("address") or "",
+        })
+
+    # ---------- Hash every temporary password in parallel ----------
+    passwords = [_gen_temp_password() for _ in prepared]
+    if passwords:
+        workers = min(8, (os.cpu_count() or 4))
+        with ThreadPoolExecutor(max_workers=workers) as pool:
+            hashes = list(pool.map(hash_temp_password, passwords))
+    else:
+        hashes = []
+
+    # ---------- Build plain dicts, then write each table in ONE multi-row INSERT ----------
+    today = date.today()
+    now = datetime.now(timezone.utc)
+    base = {"is_deleted": False, "created_at": now, "updated_at": now}
+    user_rows, role_rows, student_rows, enroll_rows = [], [], [], []
+    created, credentials = [], []
+
+    for p, plain_pw, pw_hash in zip(prepared, passwords, hashes):
+        user_id = uuid.uuid4()
+        student_id = uuid.uuid4()
+
+        user_rows.append({
+            **base,
+            "id": user_id,
+            "institution_id": institution_id,
+            "username": p["username"],
+            "email": p["email"],
+            "password_hash": pw_hash,
+            "first_name": p["first_name"],
+            "last_name": p["last_name"],
+            "phone": p["phone"],
+            "is_active": True,
+            "is_verified": True,
+            "must_change_password": True,
+        })
+        if student_role_id:
+            role_rows.append({
+                **base,
+                "id": uuid.uuid4(),
+                "user_id": user_id,
+                "role_id": student_role_id,
+            })
+
+        student_rows.append({
+            **base,
+            "id": student_id,
+            "institution_id": institution_id,
+            "user_id": user_id,
+            "admission_number": p["admission_no"],
+            "admission_date": today,
+            "date_of_birth": p["dob"],
+            "gender": str(p["gender"]).upper(),
+            "blood_group": p["blood_group"],
+            "nationality": "Indian",
+            "caste_category": "GENERAL",
+            "status": "ACTIVE",
+        })
+
+        section_id = sections_map.get((p["class_name"].lower(), p["section"].lower()))
+        if section_id and year_id:
+            enroll_rows.append({
+                **base,
+                "id": uuid.uuid4(),
+                "student_id": student_id,
+                "academic_year_id": year_id,
+                "section_id": section_id,
+                "roll_number": p["roll_no"],
+                "enrollment_date": today,
+                "status": "ACTIVE",
+            })
+
+        created.append({
+            "id": str(student_id),
+            "admissionNo": p["admission_no"],
+            "firstName": p["first_name"],
+            "lastName": p["last_name"],
+            "fullName": p["full_name"],
+            "gender": p["gender"],
+            "dob": p["dob"].isoformat(),
+            "bloodGroup": p["blood_group"] or "",
+            "classId": "",
+            "className": p["class_name"],
+            "section": p["section"] or "A",
+            "rollNo": str(p["roll_no"] or ""),
+            "academicYear": year_name,
+            "admissionDate": today.isoformat(),
+            "parentName": p["parent_name"],
+            "parentPhone": p["phone"] or "",
+            "parentEmail": p["parent_email"],
+            "address": p["address"],
             "status": "active",
         })
         credentials.append({
-            "name": full_name,
-            "admissionNo": admission_no,
-            "className": class_name,
-            "section": section_name,
-            "loginId": username,
-            "temporaryPassword": temp_password,
+            "name": p["full_name"],
+            "admissionNo": p["admission_no"],
+            "className": p["class_name"],
+            "section": p["section"],
+            "loginId": p["username"],
+            "temporaryPassword": plain_pw,
         })
 
-    db.session.commit()
+    # ---------- One multi-row INSERT per table, then a single COMMIT ----------
+    try:
+        if user_rows:
+            db.session.execute(sa_insert(User), user_rows)
+        if role_rows:
+            db.session.execute(sa_insert(UserRole), role_rows)
+        if student_rows:
+            db.session.execute(sa_insert(Student), student_rows)
+        if enroll_rows:
+            db.session.execute(sa_insert(StudentEnrollment), enroll_rows)
+        db.session.commit()
+    except Exception as exc:
+        db.session.rollback()
+        raise APIException(
+            "Database rejected the batch: " + str(exc).splitlines()[0][:160],
+            status_code=400,
+            error_code="IMPORT_DB_ERROR",
+        )
 
     return jsonify({
         "success": True,
-        "data": {"created": created, "credentials": credentials, "imported": imported, "skipped": skipped},
-        "message": f"{imported} student(s) imported, {skipped} skipped.",
+        "data": {
+            "created": created,
+            "credentials": credentials,
+            "imported": len(created),
+            "skipped": len(errors),
+            "errors": errors,
+        },
+        "message": str(len(created)) + " student(s) imported, " + str(len(errors)) + " skipped.",
     }), 201
+
 
 
 @students_bp.route("", methods=["POST"])
