@@ -2736,7 +2736,7 @@ export const LibraryManagementPage: React.FC = () => {
                       setAssignForm(prev => ({
                         ...prev,
                         teacherId: 'teach-1',
-                        teacherName: 'Mrs. Ananya Sharma',
+                        teacherName: 'Sharad Bajpai Ji',
                         staffId: 'STAFF-101',
                         department: 'Mathematics',
                         roleTitle: 'Library In-charge',
@@ -2746,7 +2746,7 @@ export const LibraryManagementPage: React.FC = () => {
                 >
                   <option value="teach-5">Mrs. Sunita Verma (STAFF-105)</option>
                   <option value="teach-2">Mr. Rajesh Kumar (STAFF-102)</option>
-                  <option value="teach-1">Mrs. Ananya Sharma (STAFF-101)</option>
+                  <option value="teach-1">Sharad Bajpai Ji (STAFF-101)</option>
                 </select>
               </div>
 

@@ -22,7 +22,7 @@ export const RecordAssessmentModal: React.FC<RecordAssessmentModalProps> = ({
   const [marks, setMarks] = useState(82);
   const [maxMarks, setMaxMarks] = useState(100);
   const [result, setResult] = useState<'Passed' | 'Shortlisted' | 'Needs Further Review' | 'Exempted' | 'Failed'>('Passed');
-  const [evaluator, setEvaluator] = useState('Mrs. Ananya Sharma (Academic Coordinator)');
+  const [evaluator, setEvaluator] = useState('Sharad Bajpai Ji (Academic Coordinator)');
   const [remarks, setRemarks] = useState('Candidate demonstrated strong conceptual clarity and arithmetic competency.');
 
   if (!application) return null;

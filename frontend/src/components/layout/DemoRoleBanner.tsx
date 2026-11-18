@@ -6,16 +6,21 @@
 import React from 'react';
 import { useERP } from '../../context/ERPContext';
 import { UserRole } from '../../types';
+import { DEMO_USERS } from '../../data/seedData';
 import { ShieldCheck, RotateCcw, Download } from 'lucide-react';
 
-const ROLES: Array<{ role: UserRole; label: string; persona: string }> = [
-  { role: 'super_admin', label: 'Super Admin', persona: 'Multi-School ERP' },
-  { role: 'school_admin', label: 'School Admin', persona: 'Principal Swaminathan' },
-  { role: 'teacher', label: 'Teacher', persona: 'Mrs. Ananya Sharma' },
-  { role: 'parent', label: 'Parent', persona: 'Mr. Vikram Patel' },
-  { role: 'student', label: 'Student', persona: 'Aarav Patel' },
-  { role: 'supplier', label: 'Supplier', persona: 'Apex Supplies' },
+// Persona names are derived from DEMO_USERS so the switcher always matches the
+// actual logged-in identity for each role (single source of truth).
+const ROLES: Array<{ role: UserRole; label: string }> = [
+  { role: 'super_admin', label: 'Super Admin' },
+  { role: 'school_admin', label: 'School Admin' },
+  { role: 'teacher', label: 'Teacher' },
+  { role: 'parent', label: 'Parent' },
+  { role: 'student', label: 'Student' },
+  { role: 'supplier', label: 'Supplier' },
 ];
+
+const personaName = (role: UserRole): string => DEMO_USERS[role]?.name || role;
 
 export const DemoRoleBanner: React.FC = () => {
   const { currentRole, switchRole, resetToDemoData, exportBackup, addToast } = useERP();
@@ -37,9 +42,9 @@ export const DemoRoleBanner: React.FC = () => {
               className={`role-chip ${isActive ? 'active' : ''}`}
               onClick={() => {
                 switchRole(r.role);
-                addToast('info', `Switched to ${r.label}`, `Viewing system from persona of ${r.persona}`);
+                addToast('info', `Switched to ${r.label}`, `Viewing system from persona of ${personaName(r.role)}`);
               }}
-              title={`Switch role to ${r.label} (${r.persona})`}
+              title={`Switch role to ${r.label} (${personaName(r.role)})`}
             >
               {r.label}
             </button>

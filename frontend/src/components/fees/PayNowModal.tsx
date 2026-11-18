@@ -7,8 +7,9 @@ import React, { useState } from 'react';
 import { FeeInvoice, Student, PaymentMethodType, FeePolicy } from '../../types';
 import { feeService } from '../../services/feeService';
 import { DemoPaymentService } from '../../services/paymentService';
+import { razorpayService } from '../../services/razorpayService';
 import { formatCurrencyINR, formatCurrencyINRWithDecimals, formatDate } from '../../utils/formatters';
-import { X, CreditCard, Smartphone, Building2, ShieldCheck, AlertCircle, CheckCircle2, Loader2, ShieldAlert, Sparkles } from 'lucide-react';
+import { X, CreditCard, Smartphone, Building2, ShieldCheck, AlertCircle, Loader2, ShieldAlert, Sparkles, Lock } from 'lucide-react';
 
 interface PayNowModalProps {
   invoice: FeeInvoice;
@@ -99,6 +100,80 @@ export const PayNowModal: React.FC<PayNowModalProps> = ({
     }
   };
 
+  // Real payment via Razorpay Checkout (hosted, PCI-compliant)
+  const razorpayReady = razorpayService.isConfigured();
+  const handleRazorpayPay = async () => {
+    if (!isValidAmount || isProcessing) return;
+    setErrorMessage('');
+
+    if (!razorpayReady) {
+      setErrorMessage(
+        'Razorpay is not set up yet. Add VITE_RAZORPAY_KEY_ID (your rzp_test_… key) to frontend/.env and restart the dev server.'
+      );
+      return;
+    }
+
+    setIsProcessing(true);
+    setProcessingStatus('Opening Razorpay secure checkout…');
+
+    const outcome = await razorpayService.openCheckout({
+      amount: payableAmount,
+      name: schoolName,
+      description: `Fee Invoice ${invoice.invoiceNo} · ${student.fullName}`,
+      prefill: {
+        name: student.parentName || student.fullName,
+        email: student.parentEmail || undefined,
+        contact: (student.parentPhone || '').replace(/[^0-9]/g, '').slice(-10) || undefined,
+      },
+      notes: {
+        invoiceId: invoice.id,
+        invoiceNo: invoice.invoiceNo,
+        studentId: student.id,
+        admissionNo: student.admissionNo || '',
+      },
+    });
+
+    if (!outcome.success) {
+      setIsProcessing(false);
+      feeService.recordFailedOrCancelledAttempt({
+        invoiceId: invoice.id,
+        amount: payableAmount,
+        paymentMethod: selectedMethod,
+        payerName: student.parentName || 'Parent / Guardian',
+        parentId: 'user-parent-vikram',
+        studentId: student.id,
+        status: outcome.dismissed ? 'cancelled' : 'failed',
+        failureReason: outcome.error || 'Razorpay payment not completed',
+      });
+      setErrorMessage(outcome.error || 'Payment was not completed.');
+      return;
+    }
+
+    setProcessingStatus('Payment successful. Generating official digital receipt…');
+    const paymentId = outcome.result?.razorpay_payment_id || '';
+
+    const res = feeService.processOnlineDemoPayment({
+      invoiceId: invoice.id,
+      amount: payableAmount,
+      paymentMethod: selectedMethod,
+      payerName: student.parentName || 'Parent / Guardian',
+      parentId: 'user-parent-vikram',
+      studentId: student.id,
+      notes: `Paid via Razorpay · Payment ID ${paymentId}`,
+    });
+
+    setIsProcessing(false);
+    if (res.success && res.receipt) {
+      onSuccess(res.receipt);
+    } else {
+      setErrorMessage(
+        res.error ||
+          'Payment was captured by Razorpay but the receipt could not be generated. Please contact the school office with Payment ID ' +
+            paymentId
+      );
+    }
+  };
+
   // Simulation handler for Failed Payment
   const handleSimulateFailure = async () => {
     if (isProcessing) return;
@@ -172,12 +247,21 @@ export const PayNowModal: React.FC<PayNowModalProps> = ({
           </button>
         </div>
 
-        {/* Demo Mode Notice Banner */}
+        {/* Payment Mode Notice Banner */}
         <div className="checkout-demo-banner">
           <ShieldAlert size={16} className="banner-icon" />
           <div className="banner-text">
-            <strong>Demo Payment Mode:</strong> No real money has been transferred. Online payments will be
-            available after payment gateway integration.
+            {razorpayReady ? (
+              <>
+                <strong>Secured by Razorpay:</strong> Pay by UPI, card or net banking on Razorpay’s PCI-DSS
+                compliant checkout. Test-mode keys move no real money.
+              </>
+            ) : (
+              <>
+                <strong>Razorpay not configured:</strong> Add <code>VITE_RAZORPAY_KEY_ID</code> to{' '}
+                <code>frontend/.env</code> to enable live checkout. The demo simulation below still works.
+              </>
+            )}
           </div>
         </div>
 
@@ -485,11 +569,20 @@ export const PayNowModal: React.FC<PayNowModalProps> = ({
           )}
         </div>
 
-        {/* Demo Simulation Action Buttons */}
+        {/* Action Buttons */}
         <div className="checkout-modal-footer">
           <div className="simulation-notice">
-            <Sparkles size={13} color="#3B82F6" />
-            <span>Developer Sandbox: Test success or decline flow</span>
+            {razorpayReady ? (
+              <>
+                <Lock size={13} color="#16a34a" />
+                <span>256-bit secured checkout by Razorpay</span>
+              </>
+            ) : (
+              <>
+                <Sparkles size={13} color="#3B82F6" />
+                <span>Developer Sandbox: simulate success / decline</span>
+              </>
+            )}
           </div>
 
           <div className="checkout-footer-buttons">
@@ -502,32 +595,47 @@ export const PayNowModal: React.FC<PayNowModalProps> = ({
               Cancel
             </button>
 
+            {/* Dev-only simulation fallback (always available for testing) */}
             <button
               type="button"
               className="btn btn-danger-outline"
               onClick={handleSimulateFailure}
               disabled={isProcessing || !isValidAmount}
-              title="Test payment failure and error handling"
+              title="Test the failure / error-handling flow without a gateway"
             >
-              Simulate Failed Payment
+              Simulate Failure
             </button>
 
+            {!razorpayReady && (
+              <button
+                type="button"
+                className="btn btn-secondary"
+                onClick={handleSimulateSuccess}
+                disabled={isProcessing || !isValidAmount}
+                title="Record a demo payment without a gateway"
+              >
+                Simulate Success
+              </button>
+            )}
+
+            {/* Primary CTA — real Razorpay checkout */}
             <button
               type="button"
               className="btn btn-primary"
-              onClick={handleSimulateSuccess}
+              onClick={handleRazorpayPay}
               disabled={isProcessing || !isValidAmount}
-              style={{ minWidth: '200px' }}
+              style={{ minWidth: '220px' }}
+              title={razorpayReady ? 'Pay securely via Razorpay' : 'Configure VITE_RAZORPAY_KEY_ID to enable'}
             >
               {isProcessing ? (
                 <>
                   <Loader2 size={15} className="animate-spin" />
-                  <span>Processing...</span>
+                  <span>Processing…</span>
                 </>
               ) : (
                 <>
-                  <CheckCircle2 size={16} />
-                  <span>Simulate Successful Payment</span>
+                  <ShieldCheck size={16} />
+                  <span>Pay {formatCurrencyINR(payableAmount)} with Razorpay</span>
                 </>
               )}
             </button>

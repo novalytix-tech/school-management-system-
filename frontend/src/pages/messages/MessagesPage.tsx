@@ -20,7 +20,7 @@ export const MessagesPage: React.FC = () => {
   const [isComposeOpen, setIsComposeOpen] = useState(false);
 
   const [composeForm, setComposeForm] = useState({
-    recipientName: 'Mrs. Ananya Sharma',
+    recipientName: 'Sharad Bajpai Ji',
     recipientRole: 'teacher' as UserRole,
     recipientId: 'teach-1',
     subject: '',
@@ -51,7 +51,7 @@ export const MessagesPage: React.FC = () => {
     addToast('success', 'Message Sent', `Dispatched to ${composeForm.recipientName}.`);
     setIsComposeOpen(false);
     setComposeForm({
-      recipientName: 'Mrs. Ananya Sharma',
+      recipientName: 'Sharad Bajpai Ji',
       recipientRole: 'teacher',
       recipientId: 'teach-1',
       subject: '',
@@ -267,7 +267,7 @@ export const MessagesPage: React.FC = () => {
                     let recipientName = 'Office of Principal';
                     let recipientId = 'user-school-admin';
                     if (role === 'teacher') {
-                      recipientName = 'Mrs. Ananya Sharma';
+                      recipientName = 'Sharad Bajpai Ji';
                       recipientId = 'teach-1';
                     } else if (role === 'parent') {
                       recipientName = 'Mr. Vikram Patel';

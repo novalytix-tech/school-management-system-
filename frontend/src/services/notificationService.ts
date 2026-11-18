@@ -283,8 +283,8 @@ export const notificationService = {
     for (const student of enrolledStudents) {
       // Find matching user in DEMO_USERS or dynamic users
       let studentUserId = `user-student-${student.id}`;
-      // Check if standard demo user Aarav matches
-      if (student.id === 'stud-1' || student.fullName.toLowerCase().includes('aarav')) {
+      // Check if the standard student demo persona (stud-1 / Shivam Giri) matches
+      if (student.id === 'stud-1' || student.fullName.toLowerCase().includes('shivam')) {
         studentUserId = DEMO_USERS.student.id;
       }
 

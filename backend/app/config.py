@@ -49,6 +49,13 @@ class BaseConfig:
         },
     }
 
+    # Razorpay payment gateway (fee payments). The Key ID is public and is also
+    # exposed to the browser via VITE_RAZORPAY_KEY_ID; the Key Secret is used only
+    # server-side for order creation and signature verification — never sent to the
+    # client. Leave unset to keep the frontend's demo/test checkout behaviour.
+    RAZORPAY_KEY_ID = os.getenv("RAZORPAY_KEY_ID", "").strip()
+    RAZORPAY_KEY_SECRET = os.getenv("RAZORPAY_KEY_SECRET", "").strip()
+
     # Development/test authentication (database-free). Only honoured when
     # DATABASE_ENABLED is false and never in production.
     DEV_AUTH_ENABLED = env_flag("DEV_AUTH_ENABLED", False)

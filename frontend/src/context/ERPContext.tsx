@@ -14,6 +14,7 @@ import { notificationService } from '../services/notificationService';
 import { leaveService } from '../services/leaveService';
 import { feeService } from '../services/feeService';
 import { studentService } from '../services/studentService';
+import { teacherService } from '../services/teacherService';
 import { downloadJSONBackup } from '../utils/export';
 
 export interface ToastMessage {
@@ -285,10 +286,52 @@ export const ERPProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     setToasts(prev => prev.filter(t => t.id !== id));
   }, []);
 
+  // Persona ↔ entity correlation: the logged-in user's display identity is
+  // derived LIVE from the underlying entity record (student / teacher / parent)
+  // it points to. This keeps every persona in sync with its own data — e.g. if
+  // an admin renames a student or updates a teacher's photo, the student/teacher
+  // persona immediately reflects it, and all personas referring to the same
+  // person stay consistent. Recomputed whenever the store changes.
+  const effectiveCurrentUser = useMemo<User>(() => {
+    const base = currentUser;
+    if (!base.referenceId) return base;
+
+    let entity: { fullName?: string; email?: string; phone?: string; avatar?: string; photoUrl?: string } | undefined;
+
+    if (base.role === 'student') {
+      entity = studentService.getById(base.referenceId);
+    } else if (base.role === 'teacher') {
+      entity = teacherService.getById(base.referenceId);
+    } else if (base.role === 'parent') {
+      // Derive the parent's identity from any linked child's parent fields.
+      const child = studentService
+        .getAll()
+        .find(s => s.parentId === base.referenceId || s.parentId === base.id);
+      if (child) {
+        entity = {
+          fullName: child.parentName,
+          email: child.parentEmail,
+          phone: child.parentPhone,
+        };
+      }
+    }
+
+    if (!entity) return base;
+
+    return {
+      ...base,
+      name: entity.fullName || base.name,
+      email: entity.email || base.email,
+      phone: entity.phone || base.phone,
+      avatar: entity.avatar || base.avatar,
+      photoUrl: entity.photoUrl || base.photoUrl,
+    };
+  }, [currentUser, storeVersion]);
+
   return (
     <ERPContext.Provider
       value={{
-        currentUser,
+        currentUser: effectiveCurrentUser,
         currentRole,
         activeWorkspace,
         setActiveWorkspace,

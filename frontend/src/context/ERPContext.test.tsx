@@ -18,7 +18,7 @@ describe('ERPContext & ERPProvider State Management', () => {
 
     expect(result.current.currentRole).toBe('school_admin');
     expect(result.current.currentUser).toBeDefined();
-    expect(result.current.currentUser.name).toBe('Dr. Arvind Swaminathan');
+    expect(result.current.currentUser.name).toBe('Ritesh Singh');
   });
 
   it('handles role switching cleanly', () => {
@@ -30,7 +30,7 @@ describe('ERPContext & ERPProvider State Management', () => {
 
     expect(result.current.currentRole).toBe('teacher');
     expect(result.current.currentUser.role).toBe('teacher');
-    expect(result.current.currentUser.name).toBe('Mrs. Ananya Sharma');
+    expect(result.current.currentUser.name).toBe('Sharad Bajpai Ji');
   });
 
   it('handles login and logout session state', () => {

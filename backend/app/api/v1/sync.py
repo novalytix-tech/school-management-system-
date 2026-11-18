@@ -269,61 +269,72 @@ def get_store():
     students_data = []
     students = Student.query.all()
     for s in students:
-        u = s.user
-        first_name = u.first_name if u else "Student"
-        last_name = u.last_name if u else ""
-        full_name = f"{first_name} {last_name}".strip()
+        # A single malformed record (e.g. an imported student with no enrollment or a
+        # section missing its class level) must never blank out the whole roster.
+        # Skip the bad row instead of 500-ing the entire hydration.
+        try:
+            u = s.user
+            first_name = u.first_name if u else "Student"
+            last_name = u.last_name if u else ""
+            full_name = f"{first_name} {last_name}".strip()
 
-        active_enrollment = next((e for e in s.enrollments if e.status == "ACTIVE"), s.enrollments[0] if s.enrollments else None)
-        class_id = str(active_enrollment.section_id) if active_enrollment else (classes_data[0]["id"] if classes_data else "cls-1")
-        section_name = active_enrollment.section.name if active_enrollment and active_enrollment.section else "A"
-        grade_name = active_enrollment.section.class_level.name if active_enrollment and active_enrollment.section and active_enrollment.section.class_level else "Grade 10"
+            active_enrollment = next((e for e in s.enrollments if e.status == "ACTIVE"), s.enrollments[0] if s.enrollments else None)
+            class_id = str(active_enrollment.section_id) if active_enrollment and active_enrollment.section_id else (classes_data[0]["id"] if classes_data else "cls-1")
+            section_name = active_enrollment.section.name if active_enrollment and active_enrollment.section else "A"
+            grade_name = (
+                active_enrollment.section.class_level.name
+                if active_enrollment and active_enrollment.section and active_enrollment.section.class_level
+                else "Grade 10"
+            )
 
-        # Parent info
-        parent_name = "Parent Guardian"
-        parent_email = "parent@stxaviers.edu.in"
-        parent_phone = "+91 98765 43210"
-        parent_id = "parent-1"
-        if s.student_parents:
-            p = s.student_parents[0].parent
-            if p:
-                parent_name = f"{p.first_name} {p.last_name}".strip()
-                parent_id = str(p.id)
-                if p.user:
-                    parent_email = p.user.email
-                    parent_phone = p.user.phone or parent_phone
+            # Parent info
+            parent_name = "Parent Guardian"
+            parent_email = "parent@stxaviers.edu.in"
+            parent_phone = "+91 98765 43210"
+            parent_id = "parent-1"
+            if s.student_parents:
+                p = s.student_parents[0].parent
+                if p:
+                    parent_name = f"{p.first_name} {p.last_name}".strip()
+                    parent_id = str(p.id)
+                    if p.user:
+                        parent_email = p.user.email
+                        parent_phone = p.user.phone or parent_phone
 
-        students_data.append({
-            "id": str(s.id),
-            "admissionNo": s.admission_number,
-            "rollNo": active_enrollment.roll_number if active_enrollment and active_enrollment.roll_number else "01",
-            "firstName": first_name,
-            "lastName": last_name,
-            "fullName": full_name,
-            "gender": s.gender.capitalize() if s.gender else "Male",
-            "dob": s.date_of_birth.isoformat() if s.date_of_birth else "2010-01-01",
-            "bloodGroup": s.blood_group or "O+",
-            "classId": class_id,
-            "className": grade_name,
-            "grade": grade_name,
-            "section": section_name,
-            "academicYear": "2026-2027",
-            "parentName": parent_name,
-            "parentEmail": parent_email,
-            "parentPhone": parent_phone,
-            "parentId": parent_id,
-            "address": "Delhi Campus Residence",
-            "city": "New Delhi",
-            "state": "Delhi",
-            "pincode": "110001",
-            "admissionDate": s.admission_date.isoformat() if s.admission_date else "2026-04-01",
-            "status": s.status.lower() if s.status else "active",
-            "feeStatus": "paid",
-            "institutionId": str(s.institution_id),
-            "emergencyContact": s.emergency_contact_phone or "+91 98765 00000",
-            "transportRouteId": "route-north-1",
-            "busStop": "Civil Lines Metro",
-        })
+            students_data.append({
+                "id": str(s.id),
+                "admissionNo": s.admission_number,
+                "rollNo": active_enrollment.roll_number if active_enrollment and active_enrollment.roll_number else "01",
+                "firstName": first_name,
+                "lastName": last_name,
+                "fullName": full_name,
+                "gender": s.gender.capitalize() if s.gender else "Male",
+                "dob": s.date_of_birth.isoformat() if s.date_of_birth else "2010-01-01",
+                "bloodGroup": s.blood_group or "O+",
+                "classId": class_id,
+                "className": grade_name,
+                "grade": grade_name,
+                "section": section_name,
+                "academicYear": "2026-2027",
+                "parentName": parent_name,
+                "parentEmail": parent_email,
+                "parentPhone": parent_phone,
+                "parentId": parent_id,
+                "address": "Delhi Campus Residence",
+                "city": "New Delhi",
+                "state": "Delhi",
+                "pincode": "110001",
+                "admissionDate": s.admission_date.isoformat() if s.admission_date else "2026-04-01",
+                "status": s.status.lower() if s.status else "active",
+                "feeStatus": "paid",
+                "institutionId": str(s.institution_id),
+                "emergencyContact": s.emergency_contact_phone or "+91 98765 00000",
+                "transportRouteId": "route-north-1",
+                "busStop": "Civil Lines Metro",
+            })
+        except Exception:
+            current_app.logger.exception("sync/store: skipping unmappable student %s", getattr(s, "id", "?"))
+            continue
 
     # 4. Teachers & Staff
     teachers_data = []

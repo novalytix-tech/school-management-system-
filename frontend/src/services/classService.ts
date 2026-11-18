@@ -6,6 +6,7 @@
 import { ClassRoom, User } from '../types';
 import { ERPStorage } from './storage';
 import { academicSessionService } from './academicSessionService';
+import { recycleBinService } from './recycleBinService';
 
 export const classService = {
   /**
@@ -179,6 +180,16 @@ export const classService = {
     }
 
     store.classes = store.classes.filter(c => c.id !== id);
+    recycleBinService.record({
+      entityType: 'Class / Section',
+      storeKey: 'classes',
+      originalId: cls.id,
+      label: `${cls.name}${cls.section ? ' - ' + cls.section : ''}`,
+      description: `Room ${cls.roomNo || '—'} · ${cls.academicYear || ''}`.trim(),
+      source: 'Classes & Sections',
+      data: cls,
+      institutionId: cls.institutionId,
+    });
     ERPStorage.set(store);
 
     return { success: true };

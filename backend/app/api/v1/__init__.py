@@ -16,6 +16,7 @@ from app.api.v1.staff import staff_bp
 from app.api.v1.institutions import institutions_bp
 from app.api.v1.sync import sync_bp
 from app.api.v1.users import users_bp
+from app.api.v1.payments import payments_bp
 
 api_v1_bp = Blueprint("api_v1", __name__, url_prefix="/api/v1")
 
@@ -36,3 +37,4 @@ api_v1_bp.register_blueprint(staff_bp)
 api_v1_bp.register_blueprint(institutions_bp)
 api_v1_bp.register_blueprint(sync_bp)
 api_v1_bp.register_blueprint(users_bp)
+api_v1_bp.register_blueprint(payments_bp)

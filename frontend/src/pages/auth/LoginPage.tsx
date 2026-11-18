@@ -77,10 +77,10 @@ const ROLES: RolePreset[] = [
     label: 'Student',
     subtitle: 'Timetable, tasks & results',
     name: 'Shivam Giri (Class 10-A)',
-    email: 'aarav.sharma@student.stxaviers.edu.in',
-    loginId: 'aarav.sharma',
-    phone: '+91 98222 33445',
-    defaultPass: 'Aarav#601',
+    email: 'shivam.giri@student.stxaviers.edu.in',
+    loginId: 'shivam.giri',
+    phone: '+91 98111 06010',
+    defaultPass: 'Shivam#601',
     icon: GraduationCap,
   },
   {
@@ -141,6 +141,28 @@ export const LoginPage: React.FC = () => {
     setSubmitting(true);
     setLoginError('');
 
+    // Quick-demo fallback: if the backend has no account for this persona (or is
+    // offline), accept the matching demo preset credentials and sign in locally
+    // with the DEMO_USERS identity. Gated by the preset's password.
+    const tryDemoPresetLogin = (): boolean => {
+      const id = loginIdentifier.trim().toLowerCase();
+      const digits = loginIdentifier.trim().replace(/\D/g, '');
+      const matched = ROLES.find(
+        r =>
+          (r.email.toLowerCase() === id ||
+            r.loginId.toLowerCase() === id ||
+            (digits.length >= 10 && r.phone.replace(/\D/g, '').endsWith(digits))) &&
+          loginPassword === r.defaultPass
+      );
+      if (matched) {
+        login(matched.role);
+        addToast('success', `Signed In as ${matched.label}`, `Welcome, ${matched.name}!`);
+        navigate('/');
+        return true;
+      }
+      return false;
+    };
+
     try {
       const res = await httpClient.post<{
         access_token: string;
@@ -192,22 +214,14 @@ export const LoginPage: React.FC = () => {
         return;
       }
 
+      // Backend rejected the credentials (or has no such account) — accept a
+      // matching demo preset and sign in locally so every persona always works.
+      if (tryDemoPresetLogin()) return;
       setLoginError(res?.error?.message || res?.message || 'Invalid email, Login ID, or password.');
     } catch (err: any) {
       console.warn('Login attempt fallback:', err);
-      // Offline fallback matching against preset credentials
-      const matchedPreset = ROLES.find(
-        r =>
-          r.email.toLowerCase() === loginIdentifier.trim().toLowerCase() ||
-          r.loginId.toLowerCase() === loginIdentifier.trim().toLowerCase() ||
-          r.phone.replace(/\D/g, '').endsWith(loginIdentifier.trim().replace(/\D/g, ''))
-      );
-      if (matchedPreset) {
-        login(matchedPreset.role);
-        addToast('info', `Signed In as ${matchedPreset.label}`, `Running in local workspace mode`);
-        navigate('/');
-        return;
-      }
+      // Offline / network error — same demo-preset fallback.
+      if (tryDemoPresetLogin()) return;
       setLoginError(err?.message || 'Authentication failed. Please check your credentials.');
     } finally {
       setSubmitting(false);

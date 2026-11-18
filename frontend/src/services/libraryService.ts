@@ -17,6 +17,7 @@ import {
   LibrarySettings,
 } from '../types';
 import { ERPStorage } from './storage';
+import { recycleBinService } from './recycleBinService';
 
 const DEFAULT_SETTINGS: LibrarySettings = {
   institutionId: 'inst-1',
@@ -178,8 +179,21 @@ export const libraryService = {
       throw new Error('Cannot delete catalogue record: One or more physical copies are currently checked out.');
     }
 
+    const victim = (store.books || []).find(b => b.id === id);
     store.books = (store.books || []).filter(b => b.id !== id);
     (store as any).libraryCopies = copies.filter(c => c.bookId !== id);
+    if (victim) {
+      recycleBinService.record({
+        entityType: 'Library Book',
+        storeKey: 'books',
+        originalId: victim.id,
+        label: victim.title || 'Book',
+        description: `${victim.author ? 'by ' + victim.author : ''}${victim.isbn ? ' · ISBN ' + victim.isbn : ''}`.trim(),
+        source: 'Library Management',
+        data: victim,
+        institutionId: (victim as any).institutionId,
+      });
+    }
     ERPStorage.set(store);
     notifyStorageChange();
     return true;

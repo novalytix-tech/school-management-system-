@@ -897,7 +897,7 @@ export const Topbar: React.FC<TopbarProps> = ({ onOpenMobileSidebar }) => {
                       }}
                     >
                       <div>
-                        <div style={{ fontWeight: 600, color: '#0f172a' }}>Mrs. Ananya Sharma</div>
+                        <div style={{ fontWeight: 600, color: '#0f172a' }}>{DEMO_USERS.teacher.name}</div>
                         <div style={{ fontSize: '10px', color: '#64748b' }}>Math Teacher (Normal Teacher)</div>
                       </div>
                       <span style={{ fontSize: '9px', fontWeight: 700, color: '#64748b', background: '#f1f5f9', padding: '1px 5px', borderRadius: '4px' }}>

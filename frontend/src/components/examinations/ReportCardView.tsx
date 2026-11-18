@@ -165,7 +165,7 @@ export const ReportCardView: React.FC<ReportCardViewProps> = ({
   }, [reportData, student.className]);
 
   // Teacher Name
-  const effectiveTeacher = classTeacherName || 'Mrs. Ananya Sharma, M.Sc., B.Ed.';
+  const effectiveTeacher = classTeacherName || 'Sharad Bajpai Ji, M.Sc., B.Ed.';
   const effectivePrincipal = schoolSettings.principalName || 'Dr. Rajeshwar Sen, Ph.D.';
   const affiliationNo = schoolSettings.affiliationNo || '2130045';
   const schoolCode = '08241';

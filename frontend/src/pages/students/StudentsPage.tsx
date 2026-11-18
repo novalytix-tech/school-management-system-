@@ -5,6 +5,7 @@
 
 import React, { useState, useMemo, useEffect } from 'react';
 import { studentService } from '../../services/studentService';
+import { ERPStorage } from '../../services/storage';
 import { teacherService } from '../../services/teacherService';
 import { classService } from '../../services/classService';
 import { transportService } from '../../services/transportService';
@@ -97,6 +98,16 @@ const StudentDirectoryManager: React.FC = () => {
     return Array.from(set).sort();
   }, [availableClasses]);
 
+  // Canonical academic levels so the Add/Edit form always offers the full PG→12
+  // range and clean section list, independent of whatever class records happen to
+  // exist in local demo data.
+  const GRADE_LEVELS = [
+    'PG', 'Nursery', 'LKG', 'UKG',
+    'Class 1', 'Class 2', 'Class 3', 'Class 4', 'Class 5', 'Class 6',
+    'Class 7', 'Class 8', 'Class 9', 'Class 10', 'Class 11', 'Class 12',
+  ];
+  const SECTION_LEVELS = ['A', 'B', 'C', 'D'];
+
   // Pagination states
   const [currentPage, setCurrentPage] = useState(1);
   const [pageSize, setPageSize] = useState(25);
@@ -142,11 +153,18 @@ const StudentDirectoryManager: React.FC = () => {
     dob: '2010-01-01',
     bloodGroup: 'B+',
     classId: classes[0]?.id || 'cls-10a',
+    className: classes[0]?.name || 'Class 10',
     section: 'A',
     rollNo: '',
     academicYear: '2026-2027',
     admissionDate: new Date().toISOString().split('T')[0],
     parentName: '',
+    fatherName: '',
+    motherName: '',
+    hasSibling: false,
+    siblingName: '',
+    siblingClass: '',
+    siblingSection: '',
     parentPhone: '',
     parentEmail: '',
     address: '',
@@ -161,6 +179,17 @@ const StudentDirectoryManager: React.FC = () => {
     setStudents([...studentService.getAll()]);
   };
 
+  // Keep the directory in sync with the store. The student list is seeded from a
+  // one-time snapshot at mount, but the store is also hydrated asynchronously from
+  // the backend (ERPStorage.syncFromBackend) and mutated by other services. Without
+  // this listener the page can show a stale/empty roster ("0 of 0 students") even
+  // though the store already holds the records. Re-read whenever the store changes.
+  useEffect(() => {
+    const handleStoreUpdate = () => setStudents([...studentService.getAll()]);
+    window.addEventListener('nts_erp_storage_updated', handleStoreUpdate);
+    return () => window.removeEventListener('nts_erp_storage_updated', handleStoreUpdate);
+  }, []);
+
   const handleOpenAdd = () => {
     setEditingStudent(null);
     setFormError('');
@@ -174,11 +203,18 @@ const StudentDirectoryManager: React.FC = () => {
       dob: '2015-05-15',
       bloodGroup: 'O+',
       classId: defaultClassId,
+      className: classes.find(c => c.id === defaultClassId)?.name || 'Class 6',
       section: 'A',
       rollNo: nextRoll,
       academicYear: '2026-2027',
       admissionDate: new Date().toISOString().split('T')[0],
       parentName: '',
+      fatherName: '',
+      motherName: '',
+      hasSibling: false,
+      siblingName: '',
+      siblingClass: '',
+      siblingSection: '',
       parentPhone: '',
       parentEmail: '',
       address: '',
@@ -201,11 +237,18 @@ const StudentDirectoryManager: React.FC = () => {
       dob: stud.dob,
       bloodGroup: stud.bloodGroup || 'O+',
       classId: stud.classId,
+      className: stud.className || '',
       section: stud.section,
       rollNo: stud.rollNo,
       academicYear: stud.academicYear,
       admissionDate: stud.admissionDate,
       parentName: stud.parentName,
+      fatherName: stud.fatherName || '',
+      motherName: stud.motherName || '',
+      hasSibling: stud.hasSibling || false,
+      siblingName: stud.siblingName || '',
+      siblingClass: stud.siblingClass || '',
+      siblingSection: stud.siblingSection || '',
       parentPhone: stud.parentPhone,
       parentEmail: stud.parentEmail,
       address: stud.address,
@@ -235,7 +278,7 @@ const StudentDirectoryManager: React.FC = () => {
     }
 
     const targetClass = classes.find(c => c.id === formData.classId);
-    const className = targetClass ? targetClass.name : 'Class 10';
+    const className = formData.className || (targetClass ? targetClass.name : 'Class 10');
 
     if (editingStudent) {
       const res = studentService.update(editingStudent.id, {
@@ -436,6 +479,17 @@ const StudentDirectoryManager: React.FC = () => {
     if (allCreated.length > 0) {
       studentService.addLocalBatch(allCreated);
       setStudents([...studentService.getAll()]);
+    }
+
+    // Re-hydrate the directory from the backend after an import. This makes rows
+    // that were skipped as "already exists" visible too, so the roster the user
+    // sees matches what the database actually holds (fixes the confusing case of
+    // an empty directory while the importer reports everything as a duplicate).
+    try {
+      await ERPStorage.syncFromBackend();
+      setStudents([...studentService.getAll()]);
+    } catch {
+      /* offline / local mode — keep whatever we already have */
     }
     const downloadCreds = () => {
       if (allCreds.length === 0) return;
@@ -668,16 +722,23 @@ const StudentDirectoryManager: React.FC = () => {
                         <input
                           type="checkbox"
                           className="tb-head-check"
-                          aria-label="Select all on page"
+                          aria-label="Select all students"
+                          title="Select all students (all pages, not just this page)"
+                          ref={el => {
+                            if (el) {
+                              const sel = filteredStudents.filter(s => selectedIds.includes(s.id)).length;
+                              el.indeterminate = sel > 0 && sel < filteredStudents.length;
+                            }
+                          }}
                           checked={
-                            paginatedStudents.length > 0 &&
-                            paginatedStudents.every(s => selectedIds.includes(s.id))
+                            filteredStudents.length > 0 &&
+                            filteredStudents.every(s => selectedIds.includes(s.id))
                           }
                           onChange={e => {
-                            const pageIds = paginatedStudents.map(s => s.id);
+                            const allIds = filteredStudents.map(s => s.id);
                             if (e.target.checked)
-                              setSelectedIds(prev => Array.from(new Set([...prev, ...pageIds])));
-                            else setSelectedIds(prev => prev.filter(id => !pageIds.includes(id)));
+                              setSelectedIds(prev => Array.from(new Set([...prev, ...allIds])));
+                            else setSelectedIds(prev => prev.filter(id => !allIds.includes(id)));
                           }}
                         />
                       </th>
@@ -884,18 +945,26 @@ const StudentDirectoryManager: React.FC = () => {
                   <label className="form-label required">Class Grade</label>
                   <select
                     className="form-select"
-                    value={formData.classId}
+                    value={formData.className || classes.find(c => c.id === formData.classId)?.name || GRADE_LEVELS[0]}
                     onChange={e => {
-                      const newClassId = e.target.value;
+                      const gradeName = e.target.value;
+                      const sec = (formData.section || 'A').toUpperCase();
+                      const clean = (n?: string) => (n || '').replace(/\s*-\s*[A-Za-z]$/, '').trim();
+                      // Link the matching class record (section included) when one exists,
+                      // tolerating older names like "Class 6 - A".
+                      const match =
+                        classes.find(c => clean(c.name) === gradeName && (c.section || '').toUpperCase() === sec) ||
+                        classes.find(c => clean(c.name) === gradeName);
+                      const newClassId = match?.id || formData.classId;
                       const newRoll = !editingStudent
-                        ? studentService.getNextRollNo(newClassId, formData.section || 'A')
+                        ? studentService.getNextRollNo(newClassId, sec)
                         : formData.rollNo;
-                      setFormData({ ...formData, classId: newClassId, rollNo: newRoll });
+                      setFormData({ ...formData, className: gradeName, classId: newClassId, rollNo: newRoll });
                     }}
                   >
-                    {classes.map(c => (
-                      <option key={c.id} value={c.id}>
-                        {c.name} ({c.section})
+                    {GRADE_LEVELS.map(name => (
+                      <option key={name} value={name}>
+                        {name}
                       </option>
                     ))}
                   </select>
@@ -904,21 +973,31 @@ const StudentDirectoryManager: React.FC = () => {
                 <div className="form-group">
                   <label className="form-label required">Section & Roll No</label>
                   <div style={{ display: 'flex', gap: '8px' }}>
-                    <input
-                      type="text"
-                      className="form-input"
-                      placeholder="Sec"
-                      style={{ width: '60px' }}
-                      value={formData.section}
+                    <select
+                      className="form-select"
+                      style={{ width: '110px' }}
+                      value={(formData.section || 'A').toUpperCase()}
                       onChange={e => {
                         const newSec = e.target.value;
+                        const clean = (n?: string) => (n || '').replace(/\s*-\s*[A-Za-z]$/, '').trim();
+                        const grade = formData.className || clean(classes.find(c => c.id === formData.classId)?.name);
+                        const match = classes.find(
+                          c => clean(c.name) === grade && (c.section || '').toUpperCase() === newSec
+                        );
+                        const newClassId = match?.id || formData.classId;
                         const newRoll = !editingStudent
-                          ? studentService.getNextRollNo(formData.classId, newSec || 'A')
+                          ? studentService.getNextRollNo(newClassId, newSec)
                           : formData.rollNo;
-                        setFormData({ ...formData, section: newSec, rollNo: newRoll });
+                        setFormData({ ...formData, section: newSec, classId: newClassId, rollNo: newRoll });
                       }}
                       required
-                    />
+                    >
+                      {SECTION_LEVELS.map(sec => (
+                        <option key={sec} value={sec}>
+                          Sec {sec}
+                        </option>
+                      ))}
+                    </select>
                     <input
                       type="text"
                       className="form-input"
@@ -1003,6 +1082,32 @@ const StudentDirectoryManager: React.FC = () => {
                     onChange={e => setFormData({ ...formData, admissionDate: e.target.value })}
                   />
                 </div>
+
+                <div className="form-group">
+                  <label className="form-label required">Academic Year</label>
+                  <select
+                    className="form-select"
+                    value={formData.academicYear}
+                    onChange={e => setFormData({ ...formData, academicYear: e.target.value })}
+                    required
+                  >
+                    {(() => {
+                      const now = new Date();
+                      // Academic year is taken to start in April (month index 3).
+                      const base = now.getMonth() >= 3 ? now.getFullYear() : now.getFullYear() - 1;
+                      const years: string[] = [];
+                      for (let y = base - 2; y <= base + 3; y++) years.push(`${y}-${y + 1}`);
+                      if (formData.academicYear && !years.includes(formData.academicYear)) {
+                        years.unshift(formData.academicYear);
+                      }
+                      return years.map(y => (
+                        <option key={y} value={y}>
+                          {y}
+                        </option>
+                      ));
+                    })()}
+                  </select>
+                </div>
               </div>
             </div>
 
@@ -1016,9 +1121,32 @@ const StudentDirectoryManager: React.FC = () => {
                   <input
                     type="text"
                     className="form-input"
+                    placeholder="Primary guardian"
                     value={formData.parentName}
                     onChange={e => setFormData({ ...formData, parentName: e.target.value })}
                     required
+                  />
+                </div>
+
+                <div className="form-group">
+                  <label className="form-label">Father Name</label>
+                  <input
+                    type="text"
+                    className="form-input"
+                    placeholder="Father's full name"
+                    value={formData.fatherName}
+                    onChange={e => setFormData({ ...formData, fatherName: e.target.value })}
+                  />
+                </div>
+
+                <div className="form-group">
+                  <label className="form-label">Mother Name</label>
+                  <input
+                    type="text"
+                    className="form-input"
+                    placeholder="Mother's full name"
+                    value={formData.motherName}
+                    onChange={e => setFormData({ ...formData, motherName: e.target.value })}
                   />
                 </div>
 
@@ -1057,9 +1185,77 @@ const StudentDirectoryManager: React.FC = () => {
               </div>
             </div>
 
+            <div style={{ marginBottom: '16px' }}>
+              <h3 style={{ fontSize: '13px', textTransform: 'uppercase', color: '#64748B', fontWeight: 700, letterSpacing: '0.5px', marginBottom: '8px' }}>
+                4. Sibling Information (Optional)
+              </h3>
+              <div className="form-group">
+                <label style={{ display: 'flex', alignItems: 'center', gap: '8px', cursor: 'pointer', fontSize: '14px', color: '#334155' }}>
+                  <input
+                    type="checkbox"
+                    checked={formData.hasSibling}
+                    onChange={e =>
+                      setFormData({
+                        ...formData,
+                        hasSibling: e.target.checked,
+                        siblingName: e.target.checked ? formData.siblingName : '',
+                        siblingClass: e.target.checked ? formData.siblingClass : '',
+                      })
+                    }
+                  />
+                  <span>Has a brother or sister currently studying in this school</span>
+                </label>
+              </div>
+
+              {formData.hasSibling && (
+                <div className="form-grid-3">
+                  <div className="form-group">
+                    <label className="form-label">Sibling's Name</label>
+                    <input
+                      type="text"
+                      className="form-input"
+                      placeholder="Brother's / sister's full name"
+                      value={formData.siblingName}
+                      onChange={e => setFormData({ ...formData, siblingName: e.target.value })}
+                    />
+                  </div>
+                  <div className="form-group">
+                    <label className="form-label">Sibling's Class</label>
+                    <select
+                      className="form-select"
+                      value={formData.siblingClass}
+                      onChange={e => setFormData({ ...formData, siblingClass: e.target.value })}
+                    >
+                      <option value="">Select class</option>
+                      {GRADE_LEVELS.map(name => (
+                        <option key={name} value={name}>
+                          {name}
+                        </option>
+                      ))}
+                    </select>
+                  </div>
+                  <div className="form-group">
+                    <label className="form-label">Sibling's Section</label>
+                    <select
+                      className="form-select"
+                      value={formData.siblingSection}
+                      onChange={e => setFormData({ ...formData, siblingSection: e.target.value })}
+                    >
+                      <option value="">Select section</option>
+                      {SECTION_LEVELS.map(sec => (
+                        <option key={sec} value={sec}>
+                          Sec {sec}
+                        </option>
+                      ))}
+                    </select>
+                  </div>
+                </div>
+              )}
+            </div>
+
             <div>
               <h3 style={{ fontSize: '13px', textTransform: 'uppercase', color: '#64748B', fontWeight: 700, letterSpacing: '0.5px', marginBottom: '8px' }}>
-                4. Transport Assignment
+                5. Transport Assignment
               </h3>
               <div className="form-grid-2">
                 <div className="form-group">

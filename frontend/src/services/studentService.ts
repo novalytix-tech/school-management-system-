@@ -6,6 +6,8 @@
 import { Student } from '../types';
 import { ERPStorage } from './storage';
 import { httpClient } from './api/httpClient';
+import { recycleBinService } from './recycleBinService';
+import { membershipService } from './membershipService';
 
 export const studentService = {
   /**
@@ -130,6 +132,9 @@ export const studentService = {
       id: `stud-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
     };
 
+    // Record the join before the roster grows, so bootstrap can't double-count it.
+    membershipService.recordJoin('student', newStudent);
+
     store.students = [newStudent, ...store.students];
     ERPStorage.set(store);
 
@@ -188,6 +193,11 @@ export const studentService = {
     store.students[index] = updated;
     ERPStorage.set(store);
 
+    // Track active <-> inactive transitions as leave / rejoin events.
+    if (updates.status && updates.status !== existing.status) {
+      membershipService.recordStatusChange('student', updated, existing.status, updates.status);
+    }
+
     // Persist to PostgreSQL 18 backend
     httpClient.put(`/students/${id}`, updates).catch(err => {
       console.debug('Failed to update student on backend:', err);
@@ -198,9 +208,23 @@ export const studentService = {
 
   delete: (id: string): boolean => {
     const store = ERPStorage.get();
+    const victim = store.students.find(s => s.id === id);
     const initialLen = store.students.length;
     store.students = store.students.filter(s => s.id !== id);
     if (store.students.length !== initialLen) {
+      if (victim) {
+        recycleBinService.record({
+          entityType: 'Student',
+          storeKey: 'students',
+          originalId: victim.id,
+          label: victim.fullName || `${victim.firstName} ${victim.lastName}`.trim(),
+          description: `${victim.className || ''} ${victim.section ? '- ' + victim.section : ''} · Adm ${victim.admissionNo || '—'}`.trim(),
+          source: 'Students Directory',
+          data: victim,
+          institutionId: victim.institutionId,
+        });
+        membershipService.recordDeparture('student', victim);
+      }
       ERPStorage.set(store);
       return true;
     }
@@ -211,8 +235,10 @@ export const studentService = {
     const store = ERPStorage.get();
     const student = store.students.find(s => s.id === id);
     if (student) {
+      const prev = student.status;
       student.status = student.status === 'active' ? 'inactive' : 'active';
       ERPStorage.set(store);
+      membershipService.recordStatusChange('student', student, prev, student.status);
       return student;
     }
     return undefined;

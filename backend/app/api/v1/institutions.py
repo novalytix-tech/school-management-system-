@@ -4,11 +4,17 @@ from app.extensions import db
 from app.models import Institution, InstitutionSetting, ServiceEntitlement
 from app.utils.tenant import get_current_tenant_id
 from app.utils.errors import APIException
+from app.utils.cache_helpers import cached_response, invalidate_on_write
 
 institutions_bp = Blueprint("institutions", __name__, url_prefix="/institutions")
 
+# Settings/profile change rarely but are read on every page load — cache them and
+# drop the cache whenever settings are updated.
+institutions_bp.after_request(invalidate_on_write("institutions"))
+
 
 @institutions_bp.route("/current", methods=["GET"])
+@cached_response("institutions", timeout=300)
 def get_current_institution():
     institution_id = get_current_tenant_id()
     inst = Institution.query.filter_by(id=institution_id).first()

@@ -99,7 +99,7 @@ describe('Library Management Service Unit Tests', () => {
     it('retrieves member by internal ID, reference ID or library code', () => {
       const memberByCode = libraryService.getMemberById('ADM-2024-001');
       expect(memberByCode).toBeDefined();
-      expect(memberByCode?.name).toBe('Aarav Patel');
+      expect(memberByCode?.name).toBe('Shivam Giri');
 
       const memberByRef = libraryService.getMemberById('stud-1');
       expect(memberByRef).toBeDefined();

@@ -11,6 +11,7 @@ import {
   User,
 } from '../types';
 import { ERPStorage } from './storage';
+import { recycleBinService } from './recycleBinService';
 import { resolveStaffId } from './staffGroupService';
 
 export interface SubmitHomeworkInput {
@@ -178,6 +179,16 @@ export const assignmentService = {
     }
 
     store.assignments = store.assignments.filter(a => a.id !== id);
+    recycleBinService.record({
+      entityType: 'Assignment',
+      storeKey: 'assignments',
+      originalId: assignment.id,
+      label: assignment.title || 'Assignment',
+      description: `${(assignment as any).className || ''}${(assignment as any).subject ? ' · ' + (assignment as any).subject : ''}`.trim(),
+      source: 'Homework & Assignments',
+      data: assignment,
+      institutionId: (assignment as any).institutionId,
+    });
     ERPStorage.set(store);
     return { success: true };
   },

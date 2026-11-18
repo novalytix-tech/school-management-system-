@@ -38,6 +38,8 @@ import { ServiceEntitlementsPage } from '../pages/service-entitlements/ServiceEn
 import { DigitalMarketingPage } from '../pages/digital-marketing/DigitalMarketingPage';
 import { AcademicAwardsPage } from '../pages/academic-awards/AcademicAwardsPage';
 import { AccountManagementPage } from '../pages/admin/AccountManagementPage';
+import { RecycleBinPage } from '../pages/recycle-bin/RecycleBinPage';
+import { MembershipHistoryPage } from '../pages/membership/MembershipHistoryPage';
 import { NotFound } from '../pages/NotFound';
 
 export const router = createBrowserRouter([
@@ -282,6 +284,22 @@ export const router = createBrowserRouter([
         element: (
           <ProtectedRoute allowedRoles={['school_admin', 'super_admin']}>
             <AboutPage />
+          </ProtectedRoute>
+        ),
+      },
+      {
+        path: 'recycle-bin',
+        element: (
+          <ProtectedRoute allowedRoles={['school_admin', 'super_admin', 'teacher', 'parent', 'student', 'supplier']}>
+            <RecycleBinPage />
+          </ProtectedRoute>
+        ),
+      },
+      {
+        path: 'membership-history',
+        element: (
+          <ProtectedRoute allowedRoles={['school_admin', 'super_admin']}>
+            <MembershipHistoryPage />
           </ProtectedRoute>
         ),
       },

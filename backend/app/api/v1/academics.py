@@ -8,8 +8,13 @@ from app.models import (
 )
 from app.utils.tenant import get_current_tenant_id
 from app.utils.errors import APIException
+from app.utils.cache_helpers import cached_response, invalidate_on_write
 
 academics_bp = Blueprint("academics", __name__, url_prefix="/academics")
+
+# Any successful write to this blueprint drops the cached academics reads for the
+# tenant, so lists never go stale after a create/update/delete.
+academics_bp.after_request(invalidate_on_write("academics"))
 
 
 # -------------------------------------------------------------
@@ -17,6 +22,7 @@ academics_bp = Blueprint("academics", __name__, url_prefix="/academics")
 # -------------------------------------------------------------
 
 @academics_bp.route("/sessions", methods=["GET"])
+@cached_response("academics", timeout=300)
 def list_sessions():
     institution_id = get_current_tenant_id()
     query = AcademicYear.query
@@ -95,6 +101,7 @@ def create_session():
 # -------------------------------------------------------------
 
 @academics_bp.route("/classes", methods=["GET"])
+@cached_response("academics", timeout=300)
 def list_classes():
     institution_id = get_current_tenant_id()
     query = ClassLevel.query
@@ -177,6 +184,7 @@ def create_class():
 
 
 @academics_bp.route("/sections/<uuid:section_id>", methods=["GET"])
+@cached_response("academics", timeout=300)
 def get_section(section_id):
     sec = Section.query.filter_by(id=section_id).first()
     if not sec:
@@ -209,6 +217,7 @@ def get_section(section_id):
 # -------------------------------------------------------------
 
 @academics_bp.route("/subjects", methods=["GET"])
+@cached_response("academics", timeout=300)
 def list_subjects():
     institution_id = get_current_tenant_id()
     query = Subject.query
@@ -272,6 +281,7 @@ def create_subject():
 # -------------------------------------------------------------
 
 @academics_bp.route("/timetable", methods=["GET"])
+@cached_response("academics", timeout=120)
 def get_timetable():
     institution_id = get_current_tenant_id()
     section_id = request.args.get("section_id")

@@ -13,7 +13,8 @@ import { serviceEntitlementService } from '../../services/serviceEntitlementServ
 import { ServiceIdentifier } from '../../types/serviceEntitlement';
 import { libraryService } from '../../services/libraryService';
 import { getTeacherLibraryAssignment } from '../../utils/permissions';
-import { LayoutDashboard, UserPlus, Users, Briefcase, BookOpen, CalendarCheck, FileText, Award, Trophy, IndianRupee, Clock, Calendar, Bell, MessageSquare, BookMarked, Bus, BarChart3, Building2, Package, Settings, Info, ChevronLeft, ChevronRight, CheckSquare, ShieldCheck, Layers, Megaphone, AlertTriangle, X } from 'lucide-react';
+import { recycleBinService } from '../../services/recycleBinService';
+import { LayoutDashboard, UserPlus, Users, Briefcase, BookOpen, CalendarCheck, FileText, Award, Trophy, IndianRupee, Clock, Calendar, Bell, MessageSquare, BookMarked, Bus, BarChart3, Building2, Package, Settings, Info, ChevronLeft, ChevronRight, CheckSquare, ShieldCheck, Layers, Megaphone, AlertTriangle, Trash2, History, X } from 'lucide-react';
 
 const SERVICE_PATH_MAP: Record<string, ServiceIdentifier> = {
   '/admissions': 'admissions',
@@ -94,6 +95,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
               { label: 'Academic Awards', path: '/academic-awards', icon: Trophy },
               { label: 'Service Entitlements', path: '/service-entitlements', icon: Layers },
               { label: 'Institutions Directory', path: '/institutions', icon: Building2 },
+              { label: 'Membership History', path: '/membership-history', icon: History },
               { label: 'Digital Marketing', path: '/digital-marketing', icon: Megaphone },
               { label: 'Institutional Reports', path: '/reports', icon: BarChart3 },
             ],
@@ -306,6 +308,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
             title: 'Analytics & Setup',
             items: [
               { label: 'Reports & Exports', path: '/reports', icon: BarChart3 },
+              { label: 'Membership History', path: '/membership-history', icon: History },
               { label: 'User Accounts & Auth', path: '/accounts', icon: ShieldCheck },
               { label: 'School Settings', path: '/settings', icon: Settings },
               { label: 'About Software', path: '/about', icon: Info },
@@ -319,9 +322,18 @@ export const Sidebar: React.FC<SidebarProps> = ({
   const rawGroups = getNavGroups();
   const schoolId = currentUser.institutionId || 'inst-1';
 
+  // Recycle Bin is available to every persona and always sits at the very bottom.
+  const recycleBinCount = recycleBinService.countForUser(currentUser);
+  const recycleBinGroup = {
+    title: 'Recycle Bin',
+    items: [
+      { label: 'Recycle Bin', path: '/recycle-bin', icon: Trash2, badge: recycleBinCount },
+    ],
+  };
+
   // Filter navigation items by active school service entitlements for non-super-admins
   const navGroups = useMemo(() => {
-    if (currentRole === 'super_admin') return rawGroups;
+    if (currentRole === 'super_admin') return [...rawGroups, recycleBinGroup];
 
     const isSchoolActive = serviceEntitlementService.isSchoolAccountActive(schoolId);
     if (!isSchoolActive) {
@@ -340,7 +352,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
       ];
     }
 
-    return rawGroups
+    const filtered = rawGroups
       .map(group => ({
         ...group,
         items: group.items.filter(item => {
@@ -350,7 +362,10 @@ export const Sidebar: React.FC<SidebarProps> = ({
         }),
       }))
       .filter(group => group.items.length > 0);
-  }, [rawGroups, currentRole, schoolId]);
+
+    return [...filtered, recycleBinGroup];
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [rawGroups, currentRole, schoolId, recycleBinCount]);
 
   return (
     <>

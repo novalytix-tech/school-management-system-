@@ -3,6 +3,8 @@
 // Developed for School ERP (NTS Novalytix)
 // ==========================================
 
+import { loadingBus } from '../loadingBus';
+
 export interface ApiResponse<T = any> {
   success: boolean;
   data: T;
@@ -19,6 +21,8 @@ class HttpClient {
   private accessToken: string | null = null;
   private isRefreshing: boolean = false;
   private refreshSubscribers: ((token: string) => void)[] = [];
+  private refreshFailSubscribers: (() => void)[] = [];
+  private static readonly REQUEST_TIMEOUT_MS = 15000;
 
   constructor() {
     const proc = (globalThis as any).process;
@@ -51,10 +55,34 @@ class HttpClient {
   private onTokenRefreshed(token: string) {
     this.refreshSubscribers.forEach(cb => cb(token));
     this.refreshSubscribers = [];
+    this.refreshFailSubscribers = [];
+  }
+
+  // When refresh fails, release every queued request so their promises settle
+  // instead of hanging forever (a hung promise would also freeze the top loader).
+  private onTokenRefreshFailed() {
+    this.refreshFailSubscribers.forEach(cb => cb());
+    this.refreshFailSubscribers = [];
+    this.refreshSubscribers = [];
   }
 
   private addRefreshSubscriber(cb: (token: string) => void) {
     this.refreshSubscribers.push(cb);
+  }
+
+  private addRefreshFailSubscriber(cb: () => void) {
+    this.refreshFailSubscribers.push(cb);
+  }
+
+  /** fetch() wrapper that aborts if the server does not respond in time. */
+  private async fetchWithTimeout(url: string, config: RequestInit): Promise<Response> {
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), HttpClient.REQUEST_TIMEOUT_MS);
+    try {
+      return await fetch(url, { ...config, signal: controller.signal });
+    } finally {
+      clearTimeout(timer);
+    }
   }
 
   public async request<T = any>(
@@ -81,8 +109,9 @@ class HttpClient {
       credentials: 'include', // Include HttpOnly cookies for refresh token rotation
     };
 
+    loadingBus.start();
     try {
-      let response = await fetch(url, config);
+      let response = await this.fetchWithTimeout(url, config);
 
       // Handle 401 Unauthorized with token refresh rotation
       if (response.status === 401 && !endpoint.includes('/auth/login') && !endpoint.includes('/auth/refresh')) {
@@ -101,29 +130,51 @@ class HttpClient {
               if (newToken) {
                 this.setToken(newToken);
                 this.onTokenRefreshed(newToken);
+              } else {
+                this.setToken(null);
+                window.dispatchEvent(new CustomEvent('nts_erp_auth_expired'));
+                this.onTokenRefreshFailed();
               }
             } else {
               this.setToken(null);
               window.dispatchEvent(new CustomEvent('nts_erp_auth_expired'));
+              this.onTokenRefreshFailed();
             }
           } catch (refreshErr) {
             this.setToken(null);
+            this.onTokenRefreshFailed();
           } finally {
             this.isRefreshing = false;
           }
         }
 
-        // Wait for refresh to complete then retry original request
-        const retryPromise = new Promise<ApiResponse<T>>((resolve, reject) => {
+        // Wait for refresh to complete then retry original request. Either path
+        // (success or failure) settles the promise so it never hangs.
+        const retryPromise = new Promise<ApiResponse<T>>((resolve) => {
           this.addRefreshSubscriber(async (newToken) => {
             headers.set('Authorization', `Bearer ${newToken}`);
             try {
-              const retryRes = await fetch(url, { ...config, headers });
-              const retryJson = await retryRes.json();
+              const retryRes = await this.fetchWithTimeout(url, { ...config, headers });
+              const retryJson = await retryRes.json().catch(() => ({
+                success: retryRes.ok,
+                data: null,
+                message: retryRes.statusText,
+              }));
               resolve(retryJson);
-            } catch (err) {
-              reject(err);
+            } catch (err: any) {
+              resolve({
+                success: false,
+                data: null as any,
+                error: { code: 'NETWORK_ERROR', message: err?.message || 'Network request failed' },
+              });
             }
+          });
+          this.addRefreshFailSubscriber(() => {
+            resolve({
+              success: false,
+              data: null as any,
+              error: { code: 'AUTH_EXPIRED', message: 'Session expired. Please sign in again.' },
+            });
           });
         });
 
@@ -150,6 +201,8 @@ class HttpClient {
           message: err?.message || 'Network request failed',
         },
       };
+    } finally {
+      loadingBus.done();
     }
   }
 

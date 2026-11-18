@@ -764,7 +764,7 @@ export const StudentProfileView: React.FC<StudentProfileViewProps> = ({
                   <span>Weekly Class Timetable ({formattedClassName})</span>
                 </h3>
                 <p className="card-subtitle" style={{ marginTop: '4px' }}>
-                  Room: <strong>{studentClass?.roomNo || 'Room 301'}</strong> • Class Teacher: <strong>{studentClass?.classTeacherName || 'Mrs. Ananya Sharma'}</strong> • {timetable.length} periods scheduled
+                  Room: <strong>{studentClass?.roomNo || 'Room 301'}</strong> • Class Teacher: <strong>{studentClass?.classTeacherName || 'Sharad Bajpai Ji'}</strong> • {timetable.length} periods scheduled
                 </p>
               </div>
 

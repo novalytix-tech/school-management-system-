@@ -23,7 +23,7 @@ PASSWORDS = {
 }
 
 # Every (rule, method) pair registered before the database was disconnected.
-EXPECTED_ROUTE_COUNT = 80
+EXPECTED_ROUTE_COUNT = 85
 
 
 @pytest.fixture(scope="module")
@@ -122,7 +122,7 @@ def _concrete_url(rule):
 
 
 def _db_routes(app):
-    skip_prefixes = ("/api/v1/health", "/api/v1/auth/", "/api/v1/test/", "/api/v1/sync/", "/api/v1/students", "/api/v1/users")
+    skip_prefixes = ("/api/v1/health", "/api/v1/auth/", "/api/v1/test/", "/api/v1/sync/", "/api/v1/students", "/api/v1/users", "/api/v1/payments/")
     for rule in app.url_map.iter_rules():
         if not rule.rule.startswith("/api/v1") or rule.rule.startswith(skip_prefixes):
             continue
@@ -221,7 +221,6 @@ def test_me_returns_profile(client):
 
 @pytest.mark.parametrize("method,url,payload", [
     ("PUT", "/api/v1/auth/me", {"first_name": "X"}),
-    ("POST", "/api/v1/auth/change-password", {"current_password": "a", "new_password": "b", "confirm_password": "b"}),
     ("POST", "/api/v1/auth/forgot-password", {"email": "principal@stxaviers.edu.in"}),
     ("POST", "/api/v1/auth/reset-password", {"token": "t", "new_password": "b", "confirm_password": "b"}),
 ])

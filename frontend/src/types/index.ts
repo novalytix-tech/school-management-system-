@@ -70,6 +70,12 @@ export interface Student {
   admissionDate: string;
   parentId?: string;
   parentName: string;
+  fatherName?: string;
+  motherName?: string;
+  hasSibling?: boolean;
+  siblingName?: string;
+  siblingClass?: string;
+  siblingSection?: string;
   parentPhone: string;
   parentEmail: string;
   address: string;
@@ -1337,6 +1343,83 @@ export interface ERPDataStore {
   competitionEvents?: import('./academicAwards').CompetitionEvent[];
   awardCertificates?: import('./academicAwards').AwardCertificate[];
   notifications?: AppNotification[];
+  recycleBin?: RecycleBinEntry[];
+  membershipEvents?: MembershipEvent[];
+}
+
+/**
+ * A single join / leave / rejoin event in a student's or teacher's membership
+ * lifecycle with the organization. Pairing these chronologically yields the
+ * person's tenure "stints" (each with a start, an end, and a duration), how many
+ * times they left and rejoined, and their total time as a member.
+ */
+export interface MembershipEvent {
+  id: string;
+  entityType: 'student' | 'teacher';
+  entityId: string;
+  personName: string;
+  /** Admission number (students) or staff id (teachers). */
+  personRef?: string;
+  /** Class/section (students) or designation/department (teachers). */
+  roleLabel?: string;
+  institutionId?: string;
+  eventType: 'joined' | 'left' | 'rejoined';
+  /** ISO date (YYYY-MM-DD) the event took effect. */
+  date: string;
+  note?: string;
+}
+
+/**
+ * A single class-assignment tenure row for a teacher, using the open-ended
+ * "high date" convention: while the teacher is an active member the assignment
+ * has no real end, represented by the sentinel 9999-12-31. When the teacher
+ * leaves the organization the sentinel is replaced with the actual departure
+ * date and the row is flagged inactive.
+ */
+export interface ClassTenureRecord {
+  teacherId: string;
+  teacherName: string;
+  /** Staff id of the teacher. */
+  staffId?: string;
+  institutionId?: string;
+  classId: string;
+  className: string;
+  section: string;
+  subject: string;
+  /** ISO date the teacher joined the organization / took the class. */
+  startDate: string;
+  /** ISO date the assignment ended, or the 9999-12-31 sentinel while active. */
+  endDate: string;
+  /** active = still teaching the class, inactive = teacher has left. */
+  isActive: boolean;
+}
+
+/**
+ * A soft-deleted record held in the global Recycle Bin. Any delete across the app
+ * can route the removed object here (with a snapshot) so it can be restored or
+ * permanently purged later, and so users can see what was deleted and from where.
+ */
+export interface RecycleBinEntry {
+  id: string;
+  /** Human-readable kind, e.g. "Student", "Teacher", "Notice". */
+  entityType: string;
+  /** The ERPDataStore collection key the record came from, e.g. "students". */
+  storeKey: keyof ERPDataStore & string;
+  /** Original record id (for duplicate-restore guards). */
+  originalId: string;
+  /** Primary label shown in the bin, e.g. the student/teacher name or notice title. */
+  label: string;
+  /** Optional secondary detail, e.g. class/section or a short summary. */
+  description?: string;
+  /** Where it was deleted from (module / page name) for traceability. */
+  source: string;
+  /** Full snapshot of the deleted record, used to restore it verbatim. */
+  data: any;
+  institutionId?: string;
+  deletedAt: string;
+  deletedByUserId: string;
+  deletedByName: string;
+  deletedByRole: string;
 }
 
 export type NotificationCategory =

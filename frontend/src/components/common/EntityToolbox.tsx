@@ -174,12 +174,16 @@ export function EntityToolbox<T>({
   };
 
   const handleExport = () => {
-    if (rows.length === 0) {
+    // Export only the selected rows when a selection exists; otherwise export all
+    // currently visible (filtered) rows. Mirrors Print so both behave consistently.
+    const data = selectedRows.length > 0 ? selectedRows : rows;
+    if (data.length === 0) {
       addToast('warning', 'Nothing to Export', 'There are no records to export.');
       return;
     }
-    exportToCSV(fileBaseName, headers, buildRows(rows));
-    addToast('success', 'Export Complete', `${rows.length} ${entityLabel.toLowerCase()} record(s) exported to CSV.`);
+    exportToCSV(fileBaseName, headers, buildRows(data));
+    const scope = selectedRows.length > 0 ? 'selected ' : '';
+    addToast('success', 'Export Complete', `${data.length} ${scope}${entityLabel.toLowerCase()} record(s) exported to CSV.`);
   };
 
   const handlePrint = () => {

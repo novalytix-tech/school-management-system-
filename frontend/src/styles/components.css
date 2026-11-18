@@ -3756,67 +3756,81 @@
 /* =========================================================
    Entity Toolbox — reusable admin action bar (NTS)
    ========================================================= */
+/* Flat 2D action bar: full-width, no drop shadow, crisp solid borders. */
 .entity-toolbox {
   display: flex;
   align-items: center;
   flex-wrap: wrap;
-  gap: 6px;
+  gap: 8px;
+  width: 100%;
   background: #ffffff;
-  border: 1px solid var(--color-border, #E2E8F0);
-  border-radius: var(--radius-lg, 10px);
-  padding: 8px 10px;
+  border: 1px solid #CBD5E1;
+  border-radius: 10px;
+  padding: 12px 16px;
   margin-bottom: 16px;
-  box-shadow: var(--shadow-sm, 0 1px 3px rgba(59, 130, 246, 0.04));
+  box-shadow: none;
 }
 
 .entity-toolbox .tb-btn {
   display: inline-flex;
   align-items: center;
-  gap: 6px;
-  background: #F8FAFC;
-  border: 1px solid #E2E8F0;
+  justify-content: center;
+  gap: 7px;
+  background: #F1F5F9;
+  border: 1px solid #CBD5E1;
   color: #334155;
-  font-size: 12.5px;
+  font-size: 13px;
   font-weight: 600;
-  padding: 7px 11px;
+  padding: 9px 16px;
   border-radius: 8px;
   cursor: pointer;
   white-space: nowrap;
-  transition: all 150ms ease;
+  box-shadow: none;
+  /* animate only colours — no 3D depth/press effect for a clean 2D look */
+  transition: background-color 120ms ease, border-color 120ms ease, color 120ms ease;
 }
 .entity-toolbox .tb-btn:hover {
-  background: #EFF6FF;
-  border-color: #BFDBFE;
+  background: #E0ECFF;
+  border-color: #93C5FD;
   color: #1D4ED8;
 }
 .entity-toolbox .tb-btn:active {
-  transform: translateY(1px);
+  background: #DBEAFE;
+  border-color: #60A5FA;
 }
 .entity-toolbox .tb-btn svg {
   flex-shrink: 0;
 }
 
 .entity-toolbox .tb-btn.tb-primary {
-  background: #3B82F6;
-  border-color: #3B82F6;
-  color: #ffffff;
-}
-.entity-toolbox .tb-btn.tb-primary:hover {
   background: #2563EB;
   border-color: #2563EB;
   color: #ffffff;
 }
+.entity-toolbox .tb-btn.tb-primary:hover {
+  background: #1D4ED8;
+  border-color: #1D4ED8;
+  color: #ffffff;
+}
+.entity-toolbox .tb-btn.tb-primary:active {
+  background: #1E40AF;
+  border-color: #1E40AF;
+}
 .entity-toolbox .tb-btn.tb-danger:hover {
-  background: #FEF2F2;
-  border-color: #FECACA;
+  background: #FEE2E2;
+  border-color: #FCA5A5;
   color: #DC2626;
+}
+.entity-toolbox .tb-btn.tb-danger:active {
+  background: #FECACA;
+  border-color: #F87171;
 }
 
 .entity-toolbox .tb-divider {
   width: 1px;
   align-self: stretch;
-  background: #E2E8F0;
-  margin: 2px 4px;
+  background: #CBD5E1;
+  margin: 2px 6px;
 }
 
 .entity-toolbox .tb-selected {
@@ -3865,7 +3879,7 @@
     display: none;
   }
   .entity-toolbox .tb-btn {
-    padding: 8px;
+    padding: 9px 10px;
   }
 }
 
@@ -4010,4 +4024,88 @@
 @media (max-width: 520px) {
   .ism-err { grid-template-columns: 54px 1fr; }
   .ism-err-reason { grid-column: 1 / -1; }
+}
+
+/* =========================================================
+   Mobile Usability Polish (NTS) — touch-friendly refinements
+   applied app-wide via shared component classes.
+   ========================================================= */
+
+/* Tablets & phones: keep stray wide content from scrolling the whole page
+   sideways. Tables still scroll inside their own .table-responsive wrapper.
+   `clip` (not `hidden`) avoids creating a nested scroll container, so the
+   sticky topbar and on-page dropdowns keep working. */
+@media (max-width: 900px) {
+  .app-main-content {
+    overflow-x: clip;
+  }
+
+  /* Make horizontal table scrolling obvious and smooth on touch devices. */
+  .table-responsive {
+    overscroll-behavior-x: contain;
+    scrollbar-width: thin;
+  }
+  .table-responsive::-webkit-scrollbar {
+    height: 7px;
+  }
+  .table-responsive::-webkit-scrollbar-thumb {
+    background: #CBD5E1;
+    border-radius: 999px;
+  }
+}
+
+/* Bigger, easier-to-tap controls on phones/small tablets. */
+@media (max-width: 640px) {
+  .btn-icon-only,
+  .icon-button {
+    width: 40px;
+    height: 40px;
+    min-height: 40px;
+  }
+
+  /* Row action buttons: comfortable spacing so they aren't flush together. */
+  .table-action-cell {
+    gap: 8px;
+  }
+  .table-action-cell .btn {
+    min-height: 38px;
+  }
+
+  /* Pagination controls become proper tap targets and can wrap. */
+  .pagination-controls {
+    flex-wrap: wrap;
+    gap: 6px;
+  }
+  .pagination-btn {
+    min-height: 36px;
+    min-width: 36px;
+  }
+}
+
+/* Phones: raise text-field font-size to 16px so iOS Safari does not auto-zoom
+   the viewport when a field is focused — the single biggest data-entry
+   annoyance on mobile. Fields are already full-width here, so nothing overflows. */
+@media (max-width: 480px) {
+  .form-input,
+  .form-select,
+  .form-textarea,
+  .filter-search input,
+  .search-input-wrapper input,
+  .search-input-field,
+  input[type="text"],
+  input[type="email"],
+  input[type="number"],
+  input[type="tel"],
+  input[type="search"],
+  input[type="password"],
+  input[type="date"],
+  select,
+  textarea {
+    font-size: 16px;
+  }
+
+  /* Keep the toolbox buttons easy to hit when labels are hidden. */
+  .entity-toolbox .tb-btn {
+    min-height: 40px;
+  }
 }

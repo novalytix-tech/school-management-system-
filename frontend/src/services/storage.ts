@@ -41,7 +41,10 @@ export class ERPStorage {
       if (!parsed.students || parsed.version !== INITIAL_ERP_DATA.version) {
         parsed.students = INITIAL_ERP_DATA.students;
         parsed.classes = INITIAL_ERP_DATA.classes;
+        parsed.teachers = INITIAL_ERP_DATA.teachers;
         parsed.studentEnrollments = INITIAL_ERP_DATA.studentEnrollments;
+        // Let membership/tenure history re-derive from the restored roster.
+        delete (parsed as any).membershipEvents;
         parsed.version = INITIAL_ERP_DATA.version;
       }
 
@@ -163,6 +166,9 @@ export class ERPStorage {
       }
       if (!parsed.notifications) {
         parsed.notifications = (INITIAL_ERP_DATA as any).notifications || [];
+      }
+      if (!parsed.recycleBin) {
+        parsed.recycleBin = (INITIAL_ERP_DATA as any).recycleBin || [];
       }
       if (!parsed.libraryCopies || parsed.libraryCopies.length === 0) {
         parsed.libraryCopies = (INITIAL_ERP_DATA as any).libraryCopies || [];
@@ -323,8 +329,13 @@ export class ERPStorage {
       const res = await httpClient.get('/sync/store');
       if (res.success && res.data) {
         const current = this.get();
-        // Hydrate backend entities directly from PostgreSQL 18
-        if (res.data.students && res.data.students.length > 0) {
+        // Demo-first: the curated local seed (students / teachers / classes with
+        // stable ids like stud-1, teach-1, cls-10a) is the source of truth so the
+        // personas stay correlated — e.g. the student persona = Shivam Giri and the
+        // parent Shakti Singh keeps Shivam Giri as their ward. We only hydrate these
+        // core collections from the backend when the local store is genuinely empty,
+        // so a live backend can never clobber the curated identities.
+        if ((!current.students || current.students.length === 0) && res.data.students && res.data.students.length > 0) {
           current.students = res.data.students.map((st: any) => ({
             ...st,
             className: st.className || st.grade || 'Class 10',
@@ -333,14 +344,14 @@ export class ERPStorage {
             busStop: st.busStop || 'Civil Lines Metro',
           }));
         }
-        if (res.data.classes && res.data.classes.length > 0) {
+        if ((!current.classes || current.classes.length === 0) && res.data.classes && res.data.classes.length > 0) {
           current.classes = res.data.classes.map((c: any) => ({
             ...c,
             classTeacherName: c.classTeacherName || c.classTeacher || 'Assigned Faculty',
             subjects: c.subjects && c.subjects.length > 0 ? c.subjects : ['Mathematics', 'Science', 'English', 'Social Studies'],
           }));
         }
-        if (res.data.teachers && res.data.teachers.length > 0) {
+        if ((!current.teachers || current.teachers.length === 0) && res.data.teachers && res.data.teachers.length > 0) {
           current.teachers = res.data.teachers.map((t: any) => ({
             ...t,
             staffId: t.staffId || t.employeeId || 'STAFF-101',

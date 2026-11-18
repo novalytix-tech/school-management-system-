@@ -5,6 +5,8 @@
 
 import { Teacher } from '../types';
 import { ERPStorage } from './storage';
+import { recycleBinService } from './recycleBinService';
+import { membershipService } from './membershipService';
 
 export const teacherService = {
   getAll: (): Teacher[] => {
@@ -33,6 +35,9 @@ export const teacherService = {
       fullName: `${data.firstName.trim()} ${data.lastName.trim()}`,
     };
 
+    // Record the join before the roster grows, so bootstrap can't double-count it.
+    membershipService.recordJoin('teacher', newTeacher);
+
     store.teachers = [newTeacher, ...store.teachers];
     ERPStorage.set(store);
     return { success: true, data: newTeacher };
@@ -57,6 +62,12 @@ export const teacherService = {
 
     store.teachers[index] = updated;
     ERPStorage.set(store);
+
+    // Track active <-> inactive transitions as leave / rejoin events.
+    if (updates.status && updates.status !== existing.status) {
+      membershipService.recordStatusChange('teacher', updated, existing.status, updates.status);
+    }
+
     return { success: true, data: updated };
   },
 
@@ -70,9 +81,23 @@ export const teacherService = {
 
   delete: (id: string): boolean => {
     const store = ERPStorage.get();
+    const victim = store.teachers.find(t => t.id === id);
     const initialLen = store.teachers.length;
     store.teachers = store.teachers.filter(t => t.id !== id);
     if (store.teachers.length !== initialLen) {
+      if (victim) {
+        recycleBinService.record({
+          entityType: 'Teacher / Staff',
+          storeKey: 'teachers',
+          originalId: victim.id,
+          label: victim.fullName || `${victim.firstName} ${victim.lastName}`.trim(),
+          description: `${victim.designation || ''}${victim.department ? ' · ' + victim.department : ''}`.trim(),
+          source: 'Teachers & Staff',
+          data: victim,
+          institutionId: victim.institutionId,
+        });
+        membershipService.recordDeparture('teacher', victim);
+      }
       ERPStorage.set(store);
       return true;
     }

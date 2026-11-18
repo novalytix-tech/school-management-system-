@@ -16,7 +16,8 @@ from seed import seed_database
 @pytest.fixture(scope="session")
 def app():
     """Create application configured for testing and initialize test seed data."""
-    if not config_by_name["testing"].DATABASE_ENABLED:
+    testing_cfg = config_by_name["testing"]
+    if not testing_cfg.DATABASE_ENABLED or not testing_cfg.SQLALCHEMY_DATABASE_URI:
         pytest.skip(
             "BLOCKED BY DATABASE DISCONNECTION: set DATABASE_ENABLED=true and "
             "TEST_DATABASE_URL to run database-backed tests."
