@@ -29,25 +29,25 @@ const ROLE_OPTIONS: RoleOption[] = [
   {
     role: 'school_admin',
     label: 'School Admin',
-    persona: 'Dr. Swaminathan • Principal',
+    persona: 'Ritesh Singh • Principal',
     icon: ShieldCheck,
   },
   {
     role: 'teacher',
     label: 'Teacher',
-    persona: 'Mrs. Ananya Sharma • PGT',
+    persona: 'Sharad Bajpai Ji • PGT',
     icon: Users,
   },
   {
     role: 'parent',
     label: 'Parent',
-    persona: 'Mr. Vikram Patel • Guardian',
+    persona: 'Shakti Singh • Guardian',
     icon: UserCheck,
   },
   {
     role: 'student',
     label: 'Student',
-    persona: 'Aarav Patel • Class 10-A',
+    persona: 'Shivam Giri • Class 10-A',
     icon: GraduationCap,
   },
   {

@@ -21,7 +21,7 @@ import { Users, CalendarCheck, Award, IndianRupee, FileText, Bus, MessageSquare,
 
 export const ParentDashboard: React.FC = () => {
   const navigate = useNavigate();
-  const { selectedChild, parentChildren, setSelectedChildId, schoolSettings } = useERP();
+  const { currentUser, selectedChild, parentChildren, setSelectedChildId, schoolSettings } = useERP();
 
   // If no child is linked to the parent account, show a clear empty state rather than another student's record
   if (!selectedChild) {
@@ -97,7 +97,9 @@ export const ParentDashboard: React.FC = () => {
       <DashboardWelcomeSection
         eyebrow="PARENT DASHBOARD"
         subtitle={`Academic Session ${schoolSettings?.academicYear || '2025-2026'} • Monitoring ${selectedChild.fullName}`}
-        student={selectedChild}
+        profileName={currentUser.name}
+        profilePhoto={currentUser.photoUrl}
+        badgeLabel="Parent Account"
         actions={
           parentChildren.length > 1 ? (
             <div style={{ display: 'flex', alignItems: 'center', gap: '6px', marginLeft: 'auto', flexWrap: 'wrap' }}>
