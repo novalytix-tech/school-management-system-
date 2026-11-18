@@ -87,6 +87,17 @@ def create_app(config_name=None, config_overrides=None):
     # Register API blueprints
     register_api_blueprints(flask_app)
 
+    # Root endpoint: a lightweight liveness check so GET / returns 200 instead of
+    # the standard 404 envelope. Kept outside the /api/v1 blueprint so it does not
+    # affect versioned API routes or the custom error handlers.
+    @flask_app.route("/")
+    def index():
+        from flask import jsonify
+        return jsonify({
+            "success": True,
+            "message": "School Management API is running",
+        }), 200
+
     # Load all models so Alembic and SQLAlchemy discover entity metadata
     with flask_app.app_context():
         import app.models  # noqa: F401

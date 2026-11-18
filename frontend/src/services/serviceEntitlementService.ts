@@ -307,17 +307,13 @@ export const serviceEntitlementService = {
     }
     let config = configs.find((c) => c.schoolId === schoolId);
     if (!config) {
-      // Alias fallback for dev/demo institution identifiers
-      if (
-        schoolId === 'inst-1' ||
-        schoolId === 'ef673796-e678-5d31-9609-d7340362466f' ||
-        schoolId === 'STXAV-DEL' ||
-        schoolId === 'STXAV-BLR' ||
-        schoolId === 'DEV-LOCAL' ||
-        schoolId === 'UNASSIGNED'
-      ) {
-        config = configs.find((c) => c.schoolId === 'inst-1') || configs[0];
-      }
+      // The frontend only holds entitlement data for its demo institutions, but a
+      // backend-authenticated user carries their real institution id (a UUID the
+      // demo registry does not know about). The backend already enforces the
+      // institution's status at login, so an unrecognized id must map to the
+      // default demo config instead of fail-closing — otherwise a perfectly valid
+      // login is wrongly shown the "School Suspended" screen.
+      config = configs.find((c) => c.schoolId === 'inst-1') || configs[0];
     }
     return config;
   },

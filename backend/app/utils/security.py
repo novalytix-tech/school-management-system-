@@ -5,11 +5,18 @@ from typing import Tuple, Optional
 from argon2 import PasswordHasher
 from argon2.exceptions import VerifyMismatchError, VerificationError, InvalidHashError
 
-# Argon2id password hasher with RFC 9106 recommended parameters
+# Argon2id password hasher — OWASP-recommended parameters (m=19 MiB, t=2, p=1).
+# Tuned for small shared-CPU / low-memory hosts (e.g. Render free tier): the old
+# 64 MiB / parallelism=4 profile allocated 64 MiB and spawned 4 threads per login,
+# which thrashes on a 0.1 vCPU / 512 MiB instance and made every sign-in slow.
+# This profile meets OWASP's minimum and is materially faster there. Argon2 stores
+# its cost parameters inside each hash, so verify_password() still validates older
+# (heavier) hashes unchanged, and check_needs_rehash() transparently upgrades them
+# to this profile on the user's next successful login.
 ph = PasswordHasher(
-    time_cost=3,          # 3 iterations
-    memory_cost=65536,    # 64 MiB
-    parallelism=4,        # 4 threads
+    time_cost=2,          # 2 iterations
+    memory_cost=19456,    # 19 MiB
+    parallelism=1,        # 1 thread (avoids CPU contention on tiny instances)
     hash_len=32,          # 32-byte hash
     salt_len=16,          # 16-byte salt
 )
