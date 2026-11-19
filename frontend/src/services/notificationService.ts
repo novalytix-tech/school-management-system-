@@ -213,7 +213,7 @@ export const notificationService = {
   /**
    * Marks all unread notifications for a user as read.
    */
-  markAllAsRead: (userId: string, role?: UserRole): number => {
+  markAllAsRead: (userId: string, _role?: UserRole): number => {
     const store = ERPStorage.get();
     const notifs = store.notifications || [];
     let updatedCount = 0;

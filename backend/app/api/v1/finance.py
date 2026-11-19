@@ -4,8 +4,7 @@ from decimal import Decimal
 from flask import Blueprint, request, jsonify
 from app.extensions import db
 from app.models import (
-    FeeStructure, FeeStructureItem, FeeInvoice, FeeInvoiceItem,
-    FeePayment, FinancialTransaction, Student, AcademicYear, ClassLevel
+    FeeStructure, FeeStructureItem, FeeInvoice, FeePayment, FinancialTransaction
 )
 from app.utils.tenant import get_current_tenant_id
 from app.utils.errors import APIException

@@ -5,7 +5,6 @@
 
 import React, { useState, useMemo, useEffect } from 'react';
 import { teacherService } from '../../services/teacherService';
-import { classService } from '../../services/classService';
 import { Teacher } from '../../types';
 import { Badge } from '../../components/common/Badge';
 import { Modal } from '../../components/common/Modal';
@@ -27,7 +26,6 @@ import { Download, Eye, Edit, Trash2, RotateCcw } from 'lucide-react';
 export const TeachersPage: React.FC = () => {
   const { currentRole, addToast } = useERP();
   const [teachers, setTeachers] = useState<Teacher[]>(() => teacherService.getAll());
-  const classes = useMemo(() => classService.getAll(), []);
 
   const [search, setSearch] = useState('');
   const [selectedDept, setSelectedDept] = useState('');

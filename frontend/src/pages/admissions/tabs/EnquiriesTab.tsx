@@ -21,13 +21,11 @@ interface EnquiriesTabProps {
 
 export const EnquiriesTab: React.FC<EnquiriesTabProps> = ({
   enquiries,
-  followUps,
   classes,
   onOpenNewEnquiry,
   onViewEnquiry,
   onAddFollowUp,
   onConvertToApp,
-  onMarkLost,
 }) => {
   const [search, setSearch] = useState('');
   const [statusFilter, setStatusFilter] = useState('all');

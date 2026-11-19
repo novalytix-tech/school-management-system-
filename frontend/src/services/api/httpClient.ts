@@ -140,7 +140,7 @@ class HttpClient {
               window.dispatchEvent(new CustomEvent('nts_erp_auth_expired'));
               this.onTokenRefreshFailed();
             }
-          } catch (refreshErr) {
+          } catch {
             this.setToken(null);
             this.onTokenRefreshFailed();
           } finally {

@@ -43,7 +43,7 @@ import './admissions.css';
 import { Users, UserPlus, FileText, ShieldCheck, Award, CreditCard, BarChart3, Download } from 'lucide-react';
 
 export const AdmissionsPage: React.FC = () => {
-  const { currentRole, schoolSettings, addToast } = useERP();
+  const { schoolSettings, addToast } = useERP();
   const classes = useMemo(() => classService.getAll(), []);
   const routes = useMemo(() => transportService.getAllRoutes(), []);
 

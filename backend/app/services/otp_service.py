@@ -3,10 +3,9 @@ import secrets
 import hashlib
 import time
 import threading
-from typing import Dict, Any, Optional, Tuple
-from datetime import datetime, timezone
+from typing import Dict, Any, Optional
 from app.utils.errors import APIException
-from app.utils.security import hash_password, validate_password_policy
+from app.utils.security import validate_password_policy
 
 
 class OTPService:

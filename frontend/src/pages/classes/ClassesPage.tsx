@@ -12,6 +12,9 @@ import { academicSessionService } from '../../services/academicSessionService';
 import { enrollmentService } from '../../services/enrollmentService';
 import { promotionService } from '../../services/promotionService';
 import { importService, ParsedImportRow } from '../../services/importService';
+import { httpClient } from '../../services/api/httpClient';
+import { ERPStorage } from '../../services/storage';
+import { exportToCSV } from '../../utils/export';
 import { attendanceService } from '../../services/attendanceService';
 
 import { ClassRoom, AcademicSession, StudentEnrollment, PromotionBatch, PromotionDecision, Student } from '../../types';
@@ -29,7 +32,7 @@ type AdminTab = 'classes' | 'sessions' | 'promotion' | 'import';
 
 export const ClassesPage: React.FC = () => {
   const navigate = useNavigate();
-  const { currentRole, currentUser, schoolSettings, addToast } = useERP();
+  const { currentRole, currentUser, addToast } = useERP();
 
   // Active Admin Tab
   const [activeTab, setActiveTab] = useState<AdminTab>('classes');
@@ -220,7 +223,7 @@ export const ClassesPage: React.FC = () => {
 
   // Withdraw Student Modal
   const [withdrawTarget, setWithdrawTarget] = useState<StudentEnrollment | null>(null);
-  const [withdrawReason, setWithdrawReason] = useState('Family relocation to another city');
+  const [withdrawReason] = useState('Family relocation to another city');
 
   // View Class Roster Modal (for Admin clicking a class card)
   const [viewRosterClass, setViewRosterClass] = useState<ClassRoom | null>(null);
@@ -235,7 +238,7 @@ export const ClassesPage: React.FC = () => {
   });
   const [promoSourceClassId, setPromoSourceClassId] = useState<string>(() => classes[0]?.id || 'cls-10a');
   const [promoDestClassId, setPromoDestClassId] = useState<string>('');
-  const [promoDestSection, setPromoDestSection] = useState<string>('A');
+  const [promoDestSection] = useState<string>('A');
 
   const [promoPreviewData, setPromoPreviewData] = useState<ReturnType<typeof promotionService.getPromotionPreview> | null>(null);
   const [promoDecisions, setPromoDecisions] = useState<PromotionDecision[]>([]);
@@ -373,38 +376,93 @@ export const ClassesPage: React.FC = () => {
     URL.revokeObjectURL(url);
   };
 
-  const handleCommitImport = () => {
+  const handleCommitImport = async () => {
     if (!validationResult || validationResult.validRows.length === 0) return;
+    if (!['super_admin', 'school_admin'].includes(currentRole)) {
+      addToast('error', 'Permission Denied', 'Only administrators can import students.');
+      return;
+    }
     setIsCommittingImport(true);
 
-    const res = importService.commitImport(
-      validationResult.validRows,
-      importSessionId,
-      importFileName,
-      currentUser
-    );
+    // Route through the server bulk-import endpoint so records persist to the
+    // database (replaces the legacy localStorage commitImport). The validated
+    // rows already carry the resolved DB section id in targetClassId.
+    const payloadRows = validationResult.validRows.map(r => ({
+      fullName: `${r.firstName} ${r.lastName}`.trim(),
+      firstName: r.firstName,
+      lastName: r.lastName,
+      admissionNo: r.admissionNo,
+      section_id: r.targetClassId,
+      className: `Class ${r.grade}`,
+      section: r.section,
+      gender: r.gender,
+      dob: r.dob,
+      bloodGroup: r.bloodGroup,
+      rollNo: r.rollNo,
+      parentName: r.parentName,
+      parentPhone: r.parentPhone,
+      parentEmail: r.parentEmail,
+    }));
+
+    const BATCH = 100;
+    let imported = 0;
+    let skipped = 0;
+    const creds: Array<{ name: string; admissionNo: string; className: string; section: string; loginId: string; temporaryPassword: string }> = [];
+    let failure = '';
+    try {
+      for (let i = 0; i < payloadRows.length; i += BATCH) {
+        const chunk = payloadRows.slice(i, i + BATCH);
+        const res = await httpClient.post<{ imported: number; skipped: number; credentials: typeof creds }>(
+          '/students/bulk-import',
+          { students: chunk, rowOffset: i }
+        );
+        if (!res?.success || !res.data) {
+          throw new Error(res?.error?.message || res?.message || 'Import failed.');
+        }
+        imported += res.data.imported || 0;
+        skipped += res.data.skipped || 0;
+        creds.push(...(res.data.credentials || []));
+      }
+    } catch (err) {
+      failure = (err instanceof Error && err.message) || 'Could not reach the server.';
+    }
 
     setIsCommittingImport(false);
 
-    if (!res.success) {
-      addToast('error', 'Import Failed', res.error);
-    } else {
-      setImportOutcome({
-        createdStudents: res.createdStudents,
-        createdEnrollments: res.createdEnrollments,
-        skippedDuplicates: res.skippedDuplicates,
-        failedRows: res.failedRows,
-      });
-      addToast(
-        'success',
-        'Import Completed',
-        `Successfully imported ${res.createdStudents} students and generated enrollments.`
-      );
-      setParsedRows([]);
-      setValidationResult(null);
-      if (fileInputRef.current) fileInputRef.current.value = '';
-      refreshAll();
+    if (failure && imported === 0) {
+      addToast('error', 'Import Failed', failure);
+      return;
     }
+
+    setImportOutcome({
+      createdStudents: imported,
+      createdEnrollments: imported,
+      skippedDuplicates: 0,
+      failedRows: skipped,
+    });
+
+    if (creds.length > 0) {
+      exportToCSV(
+        'Student_Login_Credentials',
+        ['Student Name', 'Admission No', 'Class', 'Section', 'Login ID', 'Temporary Password'],
+        creds.map(c => [c.name, c.admissionNo, c.className, c.section, c.loginId, c.temporaryPassword])
+      );
+    }
+
+    addToast(
+      failure ? 'warning' : 'success',
+      'Import Completed',
+      `${imported} student(s) imported${skipped ? `, ${skipped} skipped` : ''}.`
+    );
+    setParsedRows([]);
+    setValidationResult(null);
+    if (fileInputRef.current) fileInputRef.current.value = '';
+    try {
+      await ERPStorage.syncFromBackend();
+    } catch {
+      /* offline / local mode — keep whatever we already have */
+    }
+    refreshAll();
   };
 
   // Export Class Roster CSV

@@ -49,7 +49,7 @@ export const digitalMarketingService = {
   /**
    * Retrieves channel integration status.
    */
-  getIntegrations(schoolId: string): MarketingChannelIntegration[] {
+  getIntegrations(_schoolId: string): MarketingChannelIntegration[] {
     return [
       {
         channelId: 'google_search',
@@ -85,7 +85,7 @@ export const digitalMarketingService = {
   /**
    * Creates a new marketing campaign.
    */
-  createCampaign(campaignData: Partial<MarketingCampaign>, actor: User): MarketingCampaign {
+  createCampaign(campaignData: Partial<MarketingCampaign>, _actor: User): MarketingCampaign {
     if (!campaignData.schoolId) {
       throw new Error('Mandatory schoolId is required to create a marketing campaign.');
     }
@@ -127,7 +127,7 @@ export const digitalMarketingService = {
   updateCampaignStatus(
     campaignId: string,
     status: MarketingCampaign['status'],
-    actor: User
+    _actor: User
   ): MarketingCampaign {
     const store = ERPStorage.get();
     const campaigns = store.marketingCampaigns || [];
@@ -286,7 +286,7 @@ export const digitalMarketingService = {
    * External Ad Management Operational Advisory Checklist.
    * Explains that disabling the ERP module does not cancel external live ads on Meta or Google.
    */
-  getExternalAdChecklist(schoolId: string) {
+  getExternalAdChecklist(_schoolId: string) {
     return [
       {
         step: 1,
@@ -323,7 +323,7 @@ export const digitalMarketingService = {
   updateCampaign(
     campaignId: string,
     updates: Partial<MarketingCampaign>,
-    actor: User
+    _actor: User
   ): MarketingCampaign {
     const store = ERPStorage.get();
     const campaigns = store.marketingCampaigns || [];
@@ -404,7 +404,7 @@ export const digitalMarketingService = {
   updateContentItem(
     id: string,
     updates: Partial<MarketingContentItem>,
-    actor: User
+    _actor: User
   ): MarketingContentItem {
     const store = ERPStorage.get();
     const items = ((store as any).marketingContentItems || []) as MarketingContentItem[];
@@ -459,7 +459,7 @@ export const digitalMarketingService = {
     return updated;
   },
 
-  deleteContentItem(id: string, actor: User): void {
+  deleteContentItem(id: string, _actor: User): void {
     const store = ERPStorage.get();
     const items = ((store as any).marketingContentItems || []) as MarketingContentItem[];
     const index = items.findIndex((c) => c.id === id);

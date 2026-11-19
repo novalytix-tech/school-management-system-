@@ -1,7 +1,6 @@
-import uuid
 from flask import Blueprint, request, jsonify
 from app.extensions import db
-from app.models import Institution, InstitutionSetting, ServiceEntitlement
+from app.models import Institution, InstitutionSetting
 from app.utils.tenant import get_current_tenant_id
 from app.utils.errors import APIException
 from app.utils.cache_helpers import cached_response, invalidate_on_write

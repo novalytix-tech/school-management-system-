@@ -2,8 +2,7 @@ import uuid
 from flask import Blueprint, jsonify
 from flask_jwt_extended import jwt_required, get_jwt_identity
 from app.utils.decorators import (
-    role_required, permission_required, institution_required,
-    verify_parent_access, verify_teacher_class_access, verify_tenant_access
+    role_required, permission_required, verify_parent_access, verify_teacher_class_access, verify_tenant_access
 )
 
 test_bp = Blueprint("test_rbac", __name__, url_prefix="/test")

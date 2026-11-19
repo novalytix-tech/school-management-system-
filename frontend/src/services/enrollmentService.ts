@@ -532,7 +532,7 @@ export const enrollmentService = {
     newClassId: string,
     newSection: string,
     reason: string,
-    operator?: User
+    _operator?: User
   ): { success: boolean; newEnrollment?: StudentEnrollment; error?: string } => {
     const store = ERPStorage.get();
     const enrollments = store.studentEnrollments || [];

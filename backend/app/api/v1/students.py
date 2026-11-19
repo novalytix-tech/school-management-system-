@@ -273,6 +273,7 @@ def _import_lookups(institution_id):
 
     sections_map = {}
     sections_without_teacher = set()
+    section_names = {}  # section_id -> (class_name, section_name) for display/history
     for sec_id, sec_name, cls_name, class_teacher_id in (
         db.session.query(Section.id, Section.name, ClassLevel.name, Section.class_teacher_id)
         .join(ClassLevel, Section.class_level_id == ClassLevel.id)
@@ -280,6 +281,7 @@ def _import_lookups(institution_id):
         .all()
     ):
         sections_map[((cls_name or "").strip().lower(), (sec_name or "").strip().lower())] = sec_id
+        section_names[sec_id] = (cls_name, sec_name)
         if class_teacher_id is None:
             sections_without_teacher.add(sec_id)
 
@@ -295,6 +297,7 @@ def _import_lookups(institution_id):
         year.id if year else None,
         year.name if year else "2026-2027",
         sections_without_teacher,
+        section_names,
     )
     _LOOKUP_CACHE.update({"key": str(institution_id), "at": now, "value": value})
     return value
@@ -352,7 +355,8 @@ def bulk_import_students():
 
     # Sections / role / academic year change rarely, so they are cached briefly and
     # cost zero round-trips on every batch after the first.
-    sections_map, student_role_id, year_id, year_name, sections_without_teacher = _import_lookups(institution_id)
+    sections_map, student_role_id, year_id, year_name, sections_without_teacher, section_names = _import_lookups(institution_id)
+    valid_section_ids = set(sections_map.values())
     if not year_id:
         raise APIException(
             "No academic year is configured; cannot import students.",
@@ -372,9 +376,21 @@ def bulk_import_students():
         # Integrity rule (Task 2): resolve the Class + Section up front. A row that
         # can't be mapped to an existing section is a surfaced error (skipped),
         # never a silent import of a student with no enrollment.
+        # A caller (e.g. the Classes page) may pass an explicit section id, which
+        # is used directly; otherwise we match on class + section names.
         class_name_val = (row.get("className") or row.get("class") or "").strip()
         section_val = (row.get("section") or "").strip()
-        resolved_section_id = sections_map.get((class_name_val.lower(), section_val.lower()))
+        resolved_section_id = None
+        explicit_section = row.get("section_id") or row.get("sectionId") or row.get("classId")
+        if explicit_section:
+            try:
+                candidate = uuid.UUID(str(explicit_section))
+                if candidate in valid_section_ids:
+                    resolved_section_id = candidate
+            except (ValueError, TypeError):
+                resolved_section_id = None
+        if resolved_section_id is None:
+            resolved_section_id = sections_map.get((class_name_val.lower(), section_val.lower()))
         if not resolved_section_id:
             errors.append({
                 "row": csv_row,
@@ -383,8 +399,14 @@ def bulk_import_students():
                           "Assign a valid existing class and section.",
             })
             continue
+        # Fill display names from the resolved section if the row didn't carry them.
+        if resolved_section_id in section_names:
+            rn_cls, rn_sec = section_names[resolved_section_id]
+            class_name_val = class_name_val or (rn_cls or "")
+            section_val = section_val or (rn_sec or "")
         if resolved_section_id in sections_without_teacher:
-            import_warnings.add(f"{class_name_val} {section_val}".strip())
+            sec_label = f"{class_name_val} {section_val}".strip() or "The assigned section"
+            import_warnings.add(f"{sec_label} has no class teacher assigned.")
 
         parts = full_name.split(" ")
         first_name = (row.get("firstName") or parts[0] or full_name).strip()

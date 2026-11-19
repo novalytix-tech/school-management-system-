@@ -1,11 +1,7 @@
 import uuid
-from datetime import date, datetime
-from decimal import Decimal
 from flask import Blueprint, request, jsonify
-from app.extensions import db
-from app.models import Exam, ExamSchedule, ExamResult, GradingScale, AcademicYear, Section, Subject, Student, StudentEnrollment
+from app.models import Exam, ExamSchedule, ExamResult, GradingScale, StudentEnrollment
 from app.utils.tenant import get_current_tenant_id
-from app.utils.errors import APIException
 
 examinations_bp = Blueprint("examinations", __name__, url_prefix="/examinations")
 

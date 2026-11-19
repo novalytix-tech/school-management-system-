@@ -30,7 +30,6 @@ type ReportType =
 export const ReportsTab: React.FC<ReportsTabProps> = ({
   enquiries,
   applications,
-  followUps,
   capacities,
   classes,
 }) => {

@@ -1,13 +1,15 @@
 // ==========================================
 // Bulk Student Import Service (Native CSV / Excel RFC 4180)
+// Parsing, header mapping, pre-validation and the error-report CSV.
+// Persistence now goes through the server endpoint POST /students/bulk-import
+// (see StudentsPage / ClassesPage); the legacy localStorage commitImport was
+// retired so imports actually persist to the database.
 // Developed by NTS Novalytix
 // ==========================================
 
-import { Student, StudentEnrollment, ImportBatch, ImportRowError, User } from '../types';
-import { ERPStorage } from './storage';
+import { ImportRowError } from '../types';
 import { studentService } from './studentService';
 import { classService } from './classService';
-import { academicSessionService } from './academicSessionService';
 
 export interface ParsedImportRow {
   rowNumber: number;
@@ -373,177 +375,6 @@ export const importService = {
       errorRows,
       errors: validated.errors,
       summary: validated.summary,
-    };
-  },
-
-  /**
-   * Commits validated import rows to persistent storage
-   */
-  commitImport: (
-    validRows: ParsedImportRow[],
-    sessionId: string,
-    fileNameOrOperator?: string | User | any,
-    maybeOperator?: User | any
-  ): {
-    success: boolean;
-    batch?: ImportBatch;
-    createdStudents: number;
-    createdEnrollments: number;
-    importedCount: number;
-    skippedDuplicates: number;
-    failedRows: number;
-    error?: string;
-  } => {
-    let fileName = 'import.csv';
-    let operator: User = { id: 'admin-1', role: 'school_admin' as const, name: 'School Admin' } as any;
-
-    if (typeof fileNameOrOperator === 'string') {
-      if (maybeOperator) {
-        fileName = fileNameOrOperator;
-        operator = typeof maybeOperator === 'string' ? ({ id: maybeOperator, role: 'school_admin' as const, name: 'Admin' } as any) : maybeOperator;
-      } else {
-        if (fileNameOrOperator.includes('.') || fileNameOrOperator.includes('/')) {
-          fileName = fileNameOrOperator;
-        } else {
-          operator = { id: fileNameOrOperator, role: 'school_admin' as const, name: 'School Admin' } as any;
-        }
-      }
-    } else if (fileNameOrOperator && typeof fileNameOrOperator === 'object') {
-      operator = fileNameOrOperator;
-    }
-
-    if (!['super_admin', 'school_admin'].includes(operator.role)) {
-      return {
-        success: false,
-        createdStudents: 0,
-        createdEnrollments: 0,
-        importedCount: 0,
-        skippedDuplicates: 0,
-        failedRows: 0,
-        error: 'Permission denied: Only School Administrators can commit bulk student imports.',
-      };
-    }
-
-    const session = academicSessionService.getById(sessionId) || academicSessionService.getCurrentSession();
-    const store = ERPStorage.get();
-    if (!store.students) store.students = [];
-    if (!store.studentEnrollments) store.studentEnrollments = [];
-    if (!store.importBatches) store.importBatches = [];
-
-    const studentsList = store.students;
-    const enrollmentsList = store.studentEnrollments;
-
-    const batchId = `imp-${Date.now()}`;
-    const nowIso = new Date().toISOString();
-    const nowDate = nowIso.split('T')[0];
-
-    let createdStudents = 0;
-    let createdEnrollments = 0;
-    let skippedDuplicates = 0;
-    const errors: ImportRowError[] = [];
-
-    validRows.forEach(row => {
-      // Final guard against duplicate admission numbers
-      let admissionNo = row.admissionNo?.trim();
-      if (!admissionNo) {
-        let seq = Math.floor(100 + Math.random() * 900);
-        while (studentsList.some(s => s.admissionNo === `ADM-2026-${seq}`)) {
-          seq = Math.floor(100 + Math.random() * 900);
-        }
-        admissionNo = `ADM-2026-${seq}`;
-      } else if (studentsList.some(s => s.admissionNo.toLowerCase() === admissionNo!.toLowerCase())) {
-        skippedDuplicates++;
-        errors.push({ row: row.rowNumber, message: `Admission number "${admissionNo}" already exists in store.` });
-        return;
-      }
-
-      const targetClass = classService.getById(row.targetClassId || '') || store.classes.find(
-        c => c.grade === row.grade && c.section.toUpperCase() === row.section.toUpperCase()
-      );
-
-      if (!targetClass) {
-        errors.push({ row: row.rowNumber, message: `Class Grade ${row.grade} Section ${row.section} not resolved.` });
-        return;
-      }
-
-      const studentId = `stud-imp-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`;
-      const rollNo = row.rollNo || `${targetClass.name.replace('Class ', '')}${row.section}-${Math.floor(10 + Math.random() * 89)}`;
-
-      const newStudent: Student = {
-        id: studentId,
-        admissionNo,
-        firstName: row.firstName.trim(),
-        lastName: row.lastName.trim(),
-        fullName: `${row.firstName.trim()} ${row.lastName.trim()}`,
-        gender: row.gender,
-        dob: row.dob,
-        bloodGroup: row.bloodGroup || 'O+',
-        classId: targetClass.id,
-        className: targetClass.name,
-        section: row.section.toUpperCase(),
-        rollNo,
-        academicYear: session.name,
-        admissionDate: nowDate,
-        parentName: row.parentName.trim(),
-        parentPhone: row.parentPhone.trim(),
-        parentEmail: row.parentEmail?.trim() || '',
-        address: row.address?.trim() || 'Address on record',
-        status: 'active',
-      };
-
-      studentsList.push(newStudent);
-
-      const newEnrollment: StudentEnrollment = {
-        id: `enr-${session.id}-${studentId}`,
-        studentId,
-        admissionNo,
-        sessionId: session.id,
-        academicYear: session.name,
-        classId: targetClass.id,
-        className: targetClass.name,
-        section: row.section.toUpperCase(),
-        rollNo,
-        enrollmentDate: nowDate,
-        status: 'active',
-        remarks: `Imported via bulk CSV batch by ${operator.name}`,
-        updatedAt: nowIso,
-      };
-
-      enrollmentsList.push(newEnrollment);
-      createdStudents++;
-      createdEnrollments++;
-    });
-
-    // Update class counts
-    classService.recalculateStudentCounts(session.id);
-
-    const importBatch: ImportBatch = {
-      id: batchId,
-      fileName,
-      sessionId: session.id,
-      sessionName: session.name,
-      importedBy: operator.name,
-      importedAt: nowIso,
-      totalRows: validRows.length,
-      validRows: createdStudents,
-      createdStudents,
-      createdEnrollments,
-      skippedDuplicates,
-      failedRows: errors.length,
-      errors,
-    };
-
-    store.importBatches = [importBatch, ...store.importBatches];
-    ERPStorage.set(store);
-
-    return {
-      success: true,
-      batch: importBatch,
-      createdStudents,
-      createdEnrollments,
-      importedCount: createdStudents,
-      skippedDuplicates,
-      failedRows: errors.length,
     };
   },
 

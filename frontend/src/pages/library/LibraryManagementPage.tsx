@@ -56,13 +56,6 @@ export const LibraryManagementPage: React.FC = () => {
     return getTeacherLibraryAssignment(currentUser, staffAssignments);
   }, [currentRole, currentUser, staffAssignments]);
 
-  // Operational clearance check
-  const isLibrarianStaff = useMemo(() => {
-    if (currentRole === 'super_admin' || currentRole === 'school_admin') return true;
-    if (currentRole === 'teacher' && teacherAssignment) return true;
-    return false;
-  }, [currentRole, teacherAssignment]);
-
   // Operational KPI metrics
   const stats = useMemo(() => libraryService.getDashboardStats(), [books, copies, loans, fines, reservations, members]);
 
@@ -77,8 +70,7 @@ export const LibraryManagementPage: React.FC = () => {
   const [batchBookId, setBatchBookId] = useState('');
   const [batchQuantity, setBatchQuantity] = useState(3);
   const [isAssignStaffModalOpen, setIsAssignStaffModalOpen] = useState(false);
-  const [isPayFineModalOpen, setIsPayFineModalOpen] = useState(false);
-  const [selectedFineForPay, setSelectedFineForPay] = useState<LibraryFine | null>(null);
+  const [, setIsPayFineModalOpen] = useState(false);
   const [isWaiveFineModalOpen, setIsWaiveFineModalOpen] = useState(false);
   const [selectedFineForWaive, setSelectedFineForWaive] = useState<LibraryFine | null>(null);
   const [waiverReasonInput, setWaiverReasonInput] = useState('');
@@ -384,11 +376,6 @@ export const LibraryManagementPage: React.FC = () => {
     if (currentRole !== 'student') return [];
     return loans.filter(l => l.borrowerId === currentUser.referenceId || (l as any).studentId === currentUser.referenceId);
   }, [currentRole, currentUser, loans]);
-
-  const myStudentFines = useMemo(() => {
-    if (currentRole !== 'student') return [];
-    return fines.filter(f => f.memberCode === 'ADM-2024-001' || f.memberName.toLowerCase() === currentUser.name.toLowerCase());
-  }, [currentRole, currentUser, fines]);
 
   // Teacher loans for Teacher Persona (Scenario A: Mrs. Ananya Sharma)
   const myTeacherLoans = useMemo(() => {

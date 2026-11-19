@@ -35,7 +35,7 @@ export const promotionService = {
    */
   getPromotionEligibility: (
     studentId: string,
-    sessionId?: string
+    _sessionId?: string
   ): {
     summary: StudentAcademicSummary;
     eligibility: 'eligible' | 'compartment' | 'retained' | 'graduating' | 'review_required';

@@ -900,7 +900,7 @@ export const libraryService = {
   scanCopyInAudit(
     auditId: string,
     accessionOrBarcode: string,
-    scannedBy: string
+    _scannedBy: string
   ): { success: boolean; copy?: LibraryCopy; isDuplicate?: boolean; error?: string } {
     const store = ERPStorage.get();
     const audits: LibraryInventoryAudit[] = (store as any).libraryInventoryAudits || [];

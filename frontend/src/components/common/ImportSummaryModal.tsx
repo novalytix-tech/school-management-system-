@@ -19,6 +19,7 @@ export interface ImportSummary {
   skipped: number;
   credentials: number;
   errors: ImportRowError[];
+  warnings?: string[];
   durationSec: number;
   failure?: string;
 }
@@ -27,7 +28,8 @@ export const ImportSummaryModal: React.FC<{
   summary: ImportSummary | null;
   onClose: () => void;
   onDownloadCredentials?: () => void;
-}> = ({ summary, onClose, onDownloadCredentials }) => {
+  onDownloadErrors?: () => void;
+}> = ({ summary, onClose, onDownloadCredentials, onDownloadErrors }) => {
   if (!summary) return null;
   const clean = summary.skipped === 0 && !summary.failure;
   const total = summary.imported + summary.skipped;
@@ -89,7 +91,26 @@ export const ImportSummaryModal: React.FC<{
           </div>
         )}
 
+        {summary.warnings && summary.warnings.length > 0 && (
+          <div className="ism-errors">
+            <div className="ism-errors-head">Warnings ({summary.warnings.length})</div>
+            <div className="ism-errors-list">
+              {summary.warnings.slice(0, 100).map((w, i) => (
+                <div className="ism-err" key={`w-${i}`}>
+                  <span className="ism-err-reason">{w}</span>
+                </div>
+              ))}
+            </div>
+          </div>
+        )}
+
         <div className="ism-actions">
+          {summary.errors.length > 0 && onDownloadErrors && (
+            <button className="btn btn-secondary" onClick={onDownloadErrors}>
+              <Download size={15} />
+              <span>Download error report</span>
+            </button>
+          )}
           {summary.credentials > 0 && onDownloadCredentials && (
             <button className="btn btn-secondary" onClick={onDownloadCredentials}>
               <Download size={15} />

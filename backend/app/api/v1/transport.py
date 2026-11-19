@@ -1,14 +1,9 @@
-import uuid
-from datetime import date, time, datetime
-from decimal import Decimal
-from flask import Blueprint, request, jsonify
-from app.extensions import db
+from flask import Blueprint, jsonify
 from app.models import (
-    TransportRoute, TransportStop, TransportVehicle,
-    TransportAllocation, TransportTrip, TransportTelemetryLog
+    TransportRoute, TransportVehicle,
+    TransportTrip
 )
 from app.utils.tenant import get_current_tenant_id
-from app.utils.errors import APIException
 
 transport_bp = Blueprint("transport", __name__, url_prefix="/transport")
 

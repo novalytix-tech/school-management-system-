@@ -153,6 +153,26 @@ def test_guardians_list_returns_linked_students(client):
     assert match["students"][0]["admission_number"] == f"GRD-STU-{stamp}"
 
 
+def test_bulk_import_accepts_explicit_section_id(client):
+    """Task 4: a row may carry an explicit section_id (as the Classes page sends),
+    resolved directly without class/section name matching."""
+    section = _a_section()
+    stamp = int(datetime.now(timezone.utc).timestamp() * 1000)
+    adm = f"IMP-SID-{stamp}"
+    res = client.post("/api/v1/students/bulk-import", json={"students": [{
+        "fullName": "SectionId Import", "admissionNo": adm,
+        "section_id": str(section.id),  # explicit; no className/section provided
+        "gender": "Male", "dob": "2012-01-01",
+    }]})
+    assert res.status_code == 201
+    data = res.get_json()["data"]
+    assert data["imported"] == 1
+    assert "warnings" in data  # warnings key always present
+    student = Student.query.filter_by(admission_number=adm).first()
+    assert student is not None
+    assert any(e.status == "ACTIVE" and str(e.section_id) == str(section.id) for e in student.enrollments)
+
+
 def test_guardians_list_pagination_shape(client):
     res = client.get("/api/v1/guardians?limit=5&page=1")
     assert res.status_code == 200

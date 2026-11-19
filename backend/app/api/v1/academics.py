@@ -1,10 +1,9 @@
 import uuid
-from datetime import date, time, datetime
+from datetime import datetime
 from flask import Blueprint, request, jsonify
 from app.extensions import db
 from app.models import (
-    AcademicYear, Term, ClassLevel, Section, Subject, ClassSubject,
-    TeacherAssignment, TimetablePeriod, TimetableSlot, CalendarEvent, User
+    AcademicYear, ClassLevel, Section, Subject, TimetableSlot
 )
 from app.utils.tenant import get_current_tenant_id
 from app.utils.errors import APIException

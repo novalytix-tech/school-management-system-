@@ -1,10 +1,9 @@
 import uuid
 from functools import wraps
-from typing import Optional, List, Union
-from flask import jsonify, g, request
-from flask_jwt_extended import verify_jwt_in_request, get_jwt, get_jwt_identity
+from typing import Optional, Union
+from flask_jwt_extended import verify_jwt_in_request, get_jwt
 from app.utils.errors import APIException
-from app.models import StudentParent, Parent, ClassSubject, TeacherAssignment, User
+from app.models import StudentParent, Parent, ClassSubject, TeacherAssignment
 
 
 def role_required(*allowed_roles: str):

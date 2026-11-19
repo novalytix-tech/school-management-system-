@@ -3,8 +3,7 @@ from datetime import date, datetime
 from flask import Blueprint, request, jsonify
 from app.extensions import db
 from app.models import (
-    AdmissionInquiry, AdmissionApplication, ApplicationDocument,
-    ApplicationEvaluation, Student, User, AcademicYear, ClassLevel
+    AdmissionInquiry, AdmissionApplication, AcademicYear, ClassLevel
 )
 from app.utils.tenant import get_current_tenant_id
 from app.utils.errors import APIException

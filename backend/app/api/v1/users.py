@@ -1,13 +1,13 @@
 import uuid
 import secrets
 from datetime import datetime, timezone
-from flask import Blueprint, request, jsonify, current_app
+from flask import Blueprint, request, jsonify
 from flask_jwt_extended import jwt_required, get_jwt
 from app.extensions import db
-from app.models import User, Role, UserRole, Institution, AuditLog
+from app.models import User, Role, UserRole
 from app.utils.errors import APIException
 from app.utils.tenant import get_current_tenant_id
-from app.utils.security import hash_password, validate_password_policy
+from app.utils.security import hash_password
 from app.services.dev_auth_service import is_dev_auth_active, DevAuthService
 
 users_bp = Blueprint("users", __name__, url_prefix="/users")

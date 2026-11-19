@@ -62,7 +62,6 @@ export const Topbar: React.FC<TopbarProps> = ({ onOpenMobileSidebar }) => {
     unreadNotificationsCount,
     markNotificationAsRead,
     markAllNotificationsAsRead,
-    deleteNotification,
     selectedChild,
     parentChildren,
     setSelectedChildId,

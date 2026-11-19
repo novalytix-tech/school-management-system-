@@ -1,5 +1,4 @@
 import uuid
-from typing import Optional
 from flask import Blueprint, request, jsonify, current_app
 from flask_jwt_extended import (
     jwt_required, get_jwt, get_jwt_identity, decode_token

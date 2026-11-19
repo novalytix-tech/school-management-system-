@@ -74,7 +74,7 @@ export const TimetablePage: React.FC = () => {
     roomNo: 'Room 301',
   });
   const [conflictError, setConflictError] = useState('');
-  const [conflictWarning, setConflictWarning] = useState('');
+  const [, setConflictWarning] = useState('');
 
   const periods = timetableService.getByClass(selectedClassId, selectedSection);
   const currentClass = classes.find(c => c.id === selectedClassId);

@@ -20,7 +20,7 @@ import { ShieldCheck, UserPlus, KeyRound, RotateCcw, Lock, Unlock, Users, CheckC
 export const AccountManagementPage: React.FC = () => {
   const { addToast } = useERP();
   const [accounts, setAccounts] = useState<UserAccountItem[]>([]);
-  const [loading, setLoading] = useState(true);
+  const [, setLoading] = useState(true);
 
   // Filters
   const [search, setSearch] = useState('');
@@ -142,13 +142,6 @@ export const AccountManagementPage: React.FC = () => {
       setAccounts(prev =>
         prev.map(a => (a.id === account.id ? { ...a, status: willBeActive ? 'active' : 'deactivated', is_active: willBeActive } : a))
       );
-    }
-  };
-
-  const handleResend = async (account: UserAccountItem, channel: 'sms' | 'email') => {
-    const res = await accountService.resendCredentials(account.id, channel);
-    if (res.success) {
-      addToast('success', 'Credentials Dispatched', `Sent credentials to ${account.full_name} via ${channel.toUpperCase()}.`);
     }
   };
 

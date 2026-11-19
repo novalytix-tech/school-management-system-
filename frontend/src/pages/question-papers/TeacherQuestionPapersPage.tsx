@@ -50,7 +50,7 @@ export const TeacherQuestionPapersPage: React.FC = () => {
   const [newTitle, setNewTitle] = useState('');
   const [newPaperCode, setNewPaperCode] = useState('');
   const [newSubject, setNewSubject] = useState(teacherEntity?.assignedClasses?.[0]?.subject || 'Mathematics');
-  const [newClassId, setNewClassId] = useState(teacherEntity?.assignedClasses?.[0]?.classId || 'cls-10a');
+  const [newClassId] = useState(teacherEntity?.assignedClasses?.[0]?.classId || 'cls-10a');
   const [newClassName, setNewClassName] = useState(teacherEntity?.assignedClasses?.[0]?.className || 'Class 10');
   const [newSection, setNewSection] = useState(teacherEntity?.assignedClasses?.[0]?.section || 'A');
   const [newMethod, setNewMethod] = useState<QuestionPaperPreparationMethod>('erp_editor');

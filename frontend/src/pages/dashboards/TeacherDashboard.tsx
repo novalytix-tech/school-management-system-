@@ -7,7 +7,6 @@ import React, { useMemo } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useERP } from '../../context/ERPContext';
 import { teacherService } from '../../services/teacherService';
-import { classService } from '../../services/classService';
 import { studentService } from '../../services/studentService';
 import { attendanceService } from '../../services/attendanceService';
 import { assignmentService } from '../../services/assignmentService';
@@ -79,8 +78,6 @@ export const TeacherDashboard: React.FC = () => {
   const assignedClasses = teacher.assignedClasses || [];
 
   // Determine Class Teacher designations dynamically
-  const allClasses = classService.getAll();
-  const classTeacherOf = allClasses.filter(c => c.classTeacherId === teacher.id);
   // Dynamic date and academic year
   const todayDate = new Date().toISOString().split('T')[0];
   const academicYear = schoolSettings?.academicYear || '2025-2026';

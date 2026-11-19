@@ -32,7 +32,7 @@ import {
 
 export const StudentDashboard: React.FC = () => {
   const navigate = useNavigate();
-  const { currentUser, schoolSettings } = useERP();
+  const { currentUser } = useERP();
 
   // Load student profile dynamically for logged-in user
   const student =

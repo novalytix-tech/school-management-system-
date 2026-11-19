@@ -18,8 +18,6 @@ interface OffersAndFeesTabProps {
 export const OffersAndFeesTab: React.FC<OffersAndFeesTabProps> = ({
   applications,
   capacities,
-  classes,
-  onGenerateOffer,
   onPrintOffer,
   onRecordFee,
   onPrintReceipt,
@@ -30,7 +28,6 @@ export const OffersAndFeesTab: React.FC<OffersAndFeesTabProps> = ({
   const pendingOffers = applications.filter(a => a.stage === 'under_review');
   const issuedOffers = applications.filter(a => a.stage === 'approved' || a.stage === 'fee_pending');
   const feePendingApps = applications.filter(a => !a.isFeePaid && a.stage !== 'rejected' && a.stage !== 'withdrawn');
-  const enrolledApps = applications.filter(a => a.stage === 'enrolled');
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: '20px' }}>

@@ -5,7 +5,6 @@
 
 import React from 'react';
 import { useNavigate } from 'react-router-dom';
-import { useERP } from '../../context/ERPContext';
 import { studentService } from '../../services/studentService';
 import { teacherService } from '../../services/teacherService';
 import { feeService } from '../../services/feeService';
@@ -33,7 +32,6 @@ import {
 
 export const SchoolAdminDashboard: React.FC = () => {
   const navigate = useNavigate();
-  const { schoolSettings } = useERP();
 
   // Load essential summary counts
   const students = studentService.getAll();

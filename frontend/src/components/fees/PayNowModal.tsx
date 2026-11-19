@@ -45,7 +45,7 @@ export const PayNowModal: React.FC<PayNowModalProps> = ({
   const [upiVpaInput, setUpiVpaInput] = useState(`${student.parentEmail?.split('@')[0] || 'parent'}@okhdfcbank`);
   const [selectedBank, setSelectedBank] = useState('HDFC Bank');
   const [cardHolderName, setCardHolderName] = useState(student.parentName || 'Vikram Patel');
-  const [notes, setNotes] = useState('');
+  const [notes] = useState('');
 
   // Processing & Simulation State
   const [isProcessing, setIsProcessing] = useState(false);

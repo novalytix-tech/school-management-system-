@@ -229,7 +229,7 @@ export const schoolMigrationService = {
       'transportRoutes',
       store.transportRoutes,
       r => r.routeName || r.id,
-      r => undefined
+      () => undefined
     );
 
     // Process Library Books
@@ -237,7 +237,7 @@ export const schoolMigrationService = {
       'books',
       store.books,
       b => b.title || b.id,
-      b => undefined
+      () => undefined
     );
 
     // Process Staff Groups
@@ -264,7 +264,7 @@ export const schoolMigrationService = {
     if (typeof localStorage !== 'undefined') {
       try {
         localStorage.setItem(STORAGE_KEY, JSON.stringify(result));
-      } catch (e) {
+      } catch {
         // Ignore localStorage quota errors in memory mode
       }
     }

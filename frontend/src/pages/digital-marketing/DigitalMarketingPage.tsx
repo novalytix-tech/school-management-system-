@@ -150,10 +150,10 @@ export const DigitalMarketingPage: React.FC = () => {
   const [contentChannel, setContentChannel] = useState<MarketingChannel | 'website' | 'newsletter' | 'all_social'>('instagram');
   const [contentPlannedDate, setContentPlannedDate] = useState('2026-10-28');
   const [contentPublishTime, setContentPublishTime] = useState('10:00');
-  const [contentStaffName, setContentStaffName] = useState(currentUser.name || 'Admissions Media Cell');
+  const [contentStaffName] = useState(currentUser.name || 'Admissions Media Cell');
   const [contentCopy, setContentCopy] = useState('');
   const [contentMediaDesc, setContentMediaDesc] = useState('');
-  const [contentAudience, setContentAudience] = useState('Prospective Parents and School Community');
+  const [contentAudience] = useState('Prospective Parents and School Community');
 
   // Review Comment States
   const [principalReviewComment, setPrincipalReviewComment] = useState('');

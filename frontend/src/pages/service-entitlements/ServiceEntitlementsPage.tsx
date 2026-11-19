@@ -15,7 +15,7 @@ import { SearchInput } from '../../components/common/SearchInput';
 import { ShieldCheck, Building2, Package, Sliders, History, Megaphone, Layers, Lock, Unlock } from 'lucide-react';
 
 export const ServiceEntitlementsPage: React.FC = () => {
-  const { currentUser, currentRole, addToast } = useERP();
+  const { currentUser, addToast } = useERP();
 
   const [configs, setConfigs] = useState<SchoolServiceConfiguration[]>([]);
   const [searchQuery, setSearchQuery] = useState('');

@@ -431,7 +431,7 @@ export const QuestionPaperEditor: React.FC<QuestionPaperEditorProps> = ({
 
       {/* Sections and Questions Builder */}
       <div className="qp-sections-wrapper">
-        {sections.map((section, sIdx) => {
+        {sections.map((section) => {
           const sectionMarks = section.questions.reduce((sum, q) => sum + (Number(q.marks) || 0), 0);
           return (
             <div key={section.id} className="card qp-section-card">

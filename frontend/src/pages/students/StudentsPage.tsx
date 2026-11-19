@@ -115,6 +115,7 @@ const StudentDirectoryManager: React.FC = () => {
   const [importProgress, setImportProgress] = useState<ImportProgressState | null>(null);
   const [importSummary, setImportSummary] = useState<ImportSummary | null>(null);
   const [downloadCredsFn, setDownloadCredsFn] = useState<(() => void) | null>(null);
+  const [downloadErrorsFn, setDownloadErrorsFn] = useState<(() => void) | null>(null);
 
   useEffect(() => {
     setCurrentPage(1);
@@ -455,6 +456,7 @@ const StudentDirectoryManager: React.FC = () => {
     const allCreated: Student[] = [];
     const allCreds: ImpCred[] = [];
     const allErrors: ImportRowError[] = [];
+    const allWarnings = new Set<string>();
     let imported = 0;
     let skipped = 0;
     let errorMsg = '';
@@ -466,6 +468,7 @@ const StudentDirectoryManager: React.FC = () => {
           created: Student[];
           credentials: ImpCred[];
           errors: ImportRowError[];
+          warnings: string[];
           imported: number;
           skipped: number;
         }>('/students/bulk-import', { students: chunk, rowOffset: i });
@@ -475,6 +478,7 @@ const StudentDirectoryManager: React.FC = () => {
         allCreated.push(...(res.data.created || []));
         allCreds.push(...(res.data.credentials || []));
         allErrors.push(...(res.data.errors || []));
+        (res.data.warnings || []).forEach(w => allWarnings.add(w));
         imported += res.data.imported || 0;
         skipped += res.data.skipped || 0;
         setImportProgress(p => (p ? { ...p, done: Math.min(i + BATCH, rows.length) } : p));
@@ -508,6 +512,14 @@ const StudentDirectoryManager: React.FC = () => {
         allCreds.map(c => [c.name, c.admissionNo, c.className, c.section, c.loginId, c.temporaryPassword])
       );
     };
+    const downloadErrors = () => {
+      if (allErrors.length === 0) return;
+      exportToCSV(
+        'Student_Import_Errors',
+        ['Row', 'Name', 'Reason'],
+        allErrors.map(e => [String(e.row), e.name || '', e.reason])
+      );
+    };
     downloadCreds();
 
     // Close the progress ring, then show the full summary report.
@@ -518,10 +530,12 @@ const StudentDirectoryManager: React.FC = () => {
         skipped,
         credentials: allCreds.length,
         errors: allErrors,
+        warnings: Array.from(allWarnings),
         durationSec: (Date.now() - started) / 1000,
         failure: errorMsg || undefined,
       });
       setDownloadCredsFn(() => downloadCreds);
+      setDownloadErrorsFn(() => downloadErrors);
     }, errorMsg ? 250 : 800);
 
     setSelectedIds([]);
@@ -583,8 +597,10 @@ const StudentDirectoryManager: React.FC = () => {
         onClose={() => {
           setImportSummary(null);
           setDownloadCredsFn(null);
+          setDownloadErrorsFn(null);
         }}
         onDownloadCredentials={downloadCredsFn || undefined}
+        onDownloadErrors={downloadErrorsFn || undefined}
       />
 
       {/* Page Header */}

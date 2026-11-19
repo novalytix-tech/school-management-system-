@@ -51,7 +51,7 @@ export const accountService = {
         return { success: true, data: res.data };
       }
       return { success: false, error: res?.error?.message || res?.message || 'Failed to send OTP.' };
-    } catch (err: any) {
+    } catch {
       // Offline fallback: generate mock OTP for demonstration if server is unreachable
       const clean = identifier.trim();
       const mockOtp = String(Math.floor(100000 + Math.random() * 900000));
@@ -136,7 +136,7 @@ export const accountService = {
         return { success: true };
       }
       return { success: false, error: res?.error?.message || res?.message || 'Failed to update temporary password.' };
-    } catch (err: any) {
+    } catch {
       // Offline fallback
       return { success: true };
     }
@@ -156,7 +156,7 @@ export const accountService = {
       if (res && res.success && Array.isArray(res.data)) {
         return res.data;
       }
-    } catch (err) {
+    } catch {
       console.warn('Backend /users unavailable, falling back to local storage accounts.');
     }
 
@@ -265,7 +265,7 @@ export const accountService = {
         return { success: true, data: res.data };
       }
       return { success: false, error: res?.error?.message || res?.message || 'Failed to create user account.' };
-    } catch (err: any) {
+    } catch {
       // Offline fallback
       const prefix = data.role === 'student' ? 'STU' : data.role === 'teacher' ? 'TCH' : data.role === 'parent' ? 'PAR' : 'USR';
       const suffix = Math.floor(1000 + Math.random() * 9000);

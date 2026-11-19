@@ -1,4 +1,3 @@
-import uuid
 from datetime import datetime
 from typing import Optional, List
 from sqlalchemy import String, Text, Boolean, Integer, DateTime, UniqueConstraint, Index

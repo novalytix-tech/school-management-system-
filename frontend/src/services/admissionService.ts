@@ -1166,7 +1166,7 @@ export const admissionService = {
     return { success: true, offer: newOffer };
   },
 
-  getClassCapacities: (sessionId = '2026-2027'): ClassAdmissionCapacity[] => {
+  getClassCapacities: (_sessionId = '2026-2027'): ClassAdmissionCapacity[] => {
     const store = ERPStorage.get();
     let capacities: ClassAdmissionCapacity[] = store.admissionCapacitySettings || INITIAL_CLASS_CAPACITIES;
 

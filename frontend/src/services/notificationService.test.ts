@@ -95,7 +95,6 @@ describe('notificationService Centralized Notification & Alert System', () => {
 
     const initialStudentNotifs = notificationService.getForUser(studentUser.id);
     const initialParentNotifs = notificationService.getForUser(parentUser.id);
-    const initialTeacherNotifs = notificationService.getForUser(teacherUser.id);
 
     // Teacher sends announcement in Class 10-A
     const res = classGroupService.sendMessage(
