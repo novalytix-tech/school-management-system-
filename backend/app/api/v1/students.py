@@ -596,6 +596,11 @@ def bulk_import_students():
     from app.services.student_history_service import record_versions_bulk_and_commit
     record_versions_bulk_and_commit(history_inputs)
 
+    # Realtime: notify other clients that a batch of students was imported.
+    if created:
+        from app.services.realtime_service import emit_entity_change
+        emit_entity_change(institution_id, "student", "imported", {"count": len(created)})
+
     return jsonify({
         "success": True,
         "data": {
@@ -765,6 +770,11 @@ def create_student():
     from app.services.student_history_service import record_and_commit
     record_and_commit(student, "CREATE")
 
+    # Realtime: tell other clients a student was added so their lists update live.
+    from app.services.realtime_service import emit_entity_change
+    emit_entity_change(institution_id, "student", "created",
+                       {"id": str(student.id), "admission_number": student.admission_number})
+
     resp = {
         "success": True,
         "data": _serialize_student(student),
@@ -824,6 +834,11 @@ def update_student(student_id):
     from app.services.student_history_service import record_and_commit
     record_and_commit(student, "UPDATE")
 
+    # Realtime: notify other clients of the update.
+    from app.services.realtime_service import emit_entity_change
+    emit_entity_change(institution_id, "student", "updated",
+                       {"id": str(student.id), "admission_number": student.admission_number})
+
     return jsonify({
         "success": True,
         "data": _serialize_student(student),
@@ -874,6 +889,11 @@ def delete_student(student_id):
     # SCD2: record a final DELETE version capturing the withdrawn/soft-deleted state.
     from app.services.student_history_service import record_and_commit
     record_and_commit(student, "DELETE")
+
+    # Realtime: tell other clients to drop this student from their lists live.
+    from app.services.realtime_service import emit_entity_change
+    emit_entity_change(institution_id, "student", "deleted",
+                       {"id": str(student.id), "admission_number": student.admission_number})
 
     return jsonify({
         "success": True,

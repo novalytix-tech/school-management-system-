@@ -36,8 +36,8 @@ class BaseConfig:
     SQLALCHEMY_ENGINE_OPTIONS = {
         "pool_pre_ping": True,
         "pool_recycle": 1800,          # 30 min (was 5 min → reconnect storms)
-        "pool_size": 10,
-        "max_overflow": 20,
+        "pool_size": 3,
+        "max_overflow": 5,
         "pool_timeout": 30,
         "connect_args": {
             "keepalives": 1,

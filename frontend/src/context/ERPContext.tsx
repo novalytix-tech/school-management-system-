@@ -8,6 +8,7 @@ import { User, UserRole, SchoolSettings, Student, AppNotification } from '../typ
 import { DEMO_USERS } from '../data/seedData';
 import { ERPStorage } from '../services/storage';
 import { SYNC_ERROR_EVENT } from '../services/notifyBus';
+import { realtimeService } from '../services/realtimeService';
 import { settingsService } from '../services/settingsService';
 import { noticeService } from '../services/noticeService';
 import { messageService } from '../services/messageService';
@@ -297,6 +298,27 @@ export const ERPProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     window.addEventListener(SYNC_ERROR_EVENT, handleSyncError);
     return () => window.removeEventListener(SYNC_ERROR_EVENT, handleSyncError);
   }, [addToast]);
+
+  // Realtime: connect to the backend SocketIO room for the current tenant and
+  // apply pushed student changes to the local store live (no manual refresh).
+  // Only for a real backend session (institution UUID + token); demo/offline
+  // logins use a placeholder institutionId ('inst-1') and stay local.
+  useEffect(() => {
+    const instId = currentUser?.institutionId;
+    const token = (() => { try { return localStorage.getItem('nts_erp_token'); } catch { return null; } })();
+    const isBackendTenant = !!instId && /^[0-9a-fA-F-]{36}$/.test(instId) && !!token;
+    if (!isBackendTenant) {
+      realtimeService.disconnect();
+      return;
+    }
+    realtimeService.connect(instId!);
+    const off = realtimeService.onEntityChange(change => {
+      if (change.entity === 'student') {
+        studentService.applyRealtimeChange(change);
+      }
+    });
+    return () => { off(); };
+  }, [currentUser?.institutionId]);
 
   // Persona ↔ entity correlation: the logged-in user's display identity is
   // derived LIVE from the underlying entity record (student / teacher / parent)

@@ -271,6 +271,52 @@ export const studentService = {
     return { success: true };
   },
 
+  /**
+   * Applies a realtime student change pushed from the backend to the local store,
+   * WITHOUT echoing back to the server (set(store, false)). The store is
+   * demo-first, so for created/imported/updated we additively merge any students
+   * the local store doesn't already have (by admission number); for deleted we
+   * remove the matching student. Lists re-render via the storage-updated event.
+   */
+  applyRealtimeChange: async (change: { action: string; data?: { admission_number?: string } }): Promise<void> => {
+    const action = change.action;
+    const admNo = (change.data?.admission_number || '').toString().trim();
+    try {
+      if (action === 'deleted') {
+        if (!admNo) return;
+        const store = ERPStorage.get();
+        const before = store.students.length;
+        store.students = store.students.filter(
+          s => (s.admissionNo || '').toLowerCase() !== admNo.toLowerCase()
+        );
+        if (store.students.length !== before) ERPStorage.set(store, false);
+        return;
+      }
+
+      // created / imported / updated: pull the latest roster and merge in any
+      // students this tab doesn't already hold.
+      const res = await httpClient.get<any>('/sync/store');
+      const backendStudents = res?.data?.students;
+      if (!res?.success || !Array.isArray(backendStudents)) return;
+
+      const store = ERPStorage.get();
+      const existing = new Set(store.students.map(s => (s.admissionNo || '').toLowerCase()));
+      const fresh = backendStudents
+        .filter((st: any) => st.admissionNo && !existing.has(String(st.admissionNo).toLowerCase()))
+        .map((st: any) => ({
+          ...st,
+          className: st.className || st.grade || 'Class 10',
+          academicYear: st.academicYear || '2026-2027',
+        }));
+      if (fresh.length > 0) {
+        store.students = [...fresh, ...store.students];
+        ERPStorage.set(store, false);
+      }
+    } catch {
+      /* realtime is best-effort — never throw into the socket handler */
+    }
+  },
+
   toggleStatus: (id: string): Student | undefined => {
     const store = ERPStorage.get();
     const student = store.students.find(s => s.id === id);
