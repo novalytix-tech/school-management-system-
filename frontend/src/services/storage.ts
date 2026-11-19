@@ -8,6 +8,7 @@ import { INITIAL_ERP_DATA } from '../data/seedData';
 import { PERIOD_SLOTS } from '../utils/timetableConstants';
 import { schoolMigrationService } from './schoolMigrationService';
 import { httpClient } from './api/httpClient';
+import { notifySyncError } from './notifyBus';
 
 const STORAGE_KEY = 'nts_novalytix_school_erp_store_v1';
 
@@ -313,11 +314,25 @@ export class ERPStorage {
       // Dispatch custom event so reactive hooks/listeners can update immediately
       window.dispatchEvent(new CustomEvent('nts_erp_storage_updated', { detail: data }));
 
-      // Asynchronously synchronize mutations with PostgreSQL 18 backend
+      // Asynchronously synchronize mutations with PostgreSQL 18 backend.
+      // A failure here means local changes are not persisted server-side, so it
+      // is surfaced (de-duplicated) rather than silently swallowed.
       if (syncBackend) {
         httpClient.post('/sync/store', {
           students: data.students,
-        }).catch(err => console.debug('Backend sync notice:', err));
+        }).then(res => {
+          if (!res?.success) {
+            notifySyncError(
+              'Changes not synced to server',
+              'Your changes are saved on this device but could not be synced to the database.'
+            );
+          }
+        }).catch(() => {
+          notifySyncError(
+            'Changes not synced to server',
+            'Your changes are saved on this device but the server could not be reached.'
+          );
+        });
       }
     } catch (err) {
       console.error('Failed to save ERP store to localStorage:', err);

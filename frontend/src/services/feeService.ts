@@ -16,6 +16,7 @@ import {
 import { ERPStorage } from './storage';
 import { DemoPaymentService } from './paymentService';
 import { httpClient } from './api/httpClient';
+import { notifySyncError } from './notifyBus';
 
 export interface ParentFeeSummary {
   studentId: string;
@@ -513,12 +514,21 @@ export const feeService = {
 
     ERPStorage.set(store);
 
-    // Persist payment to PostgreSQL 18 backend
+    // Persist payment to PostgreSQL 18 backend; surface a sync failure instead of hiding it.
     httpClient.post(`/finance/invoices/${invoice.id}/pay`, {
       amount: paymentData.amount,
       payment_method: paymentData.method,
       transaction_reference: transactionRef,
-    }).catch(err => console.debug('Backend fee payment sync notice:', err));
+    }).then(res => {
+      if (!res?.success) {
+        notifySyncError(
+          'Payment recorded locally only',
+          res?.error?.message || 'The payment was recorded locally but could not be synced to the database.'
+        );
+      }
+    }).catch(() => {
+      notifySyncError('Payment recorded locally only', 'Could not reach the server to sync the payment.');
+    });
 
     return { success: true, invoice, payment: newPayment };
   },

@@ -6,11 +6,22 @@ initial version. Opt-in (runs only with TEST_DATABASE_URL set).
 """
 from datetime import datetime, timezone
 
-from app.models import Student, StudentHistory, Section
+from app.models import Student, StudentHistory, Section, ClassLevel, Institution
+
+
+def _a_section():
+    # A section in the first ACTIVE institution (the tenant the endpoint resolves),
+    # so the test is robust when other tests add extra institutions.
+    inst = Institution.query.filter_by(status="ACTIVE").first()
+    return (
+        Section.query.join(ClassLevel, Section.class_level_id == ClassLevel.id)
+        .filter(ClassLevel.institution_id == inst.id)
+        .first()
+    )
 
 
 def _section_id():
-    return str(Section.query.first().id)
+    return str(_a_section().id)
 
 
 def _create(client, suffix, first="Orig", last="Name"):
@@ -92,7 +103,7 @@ def test_delete_records_delete_version(client):
 
 
 def test_bulk_import_seeds_initial_version(client):
-    section = Section.query.first()
+    section = _a_section()
     cls_name = section.class_level.name
     stamp = int(datetime.now(timezone.utc).timestamp() * 1000)
     adm = f"SCD-IMP-{stamp}"

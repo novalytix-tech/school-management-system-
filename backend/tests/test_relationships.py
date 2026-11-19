@@ -15,11 +15,19 @@ from app.utils.security import hash_password
 
 
 def _primary_institution():
+    # Mirror get_current_tenant_id(): the first ACTIVE institution.
     return Institution.query.filter_by(status="ACTIVE").first()
 
 
 def _a_section():
-    return Section.query.first()
+    # Pick a section that belongs to the SAME institution the endpoint resolves,
+    # so the test is robust when other tests add extra institutions.
+    inst = _primary_institution()
+    return (
+        Section.query.join(ClassLevel, Section.class_level_id == ClassLevel.id)
+        .filter(ClassLevel.institution_id == inst.id)
+        .first()
+    )
 
 
 # --------------------------- create enforcement ---------------------------

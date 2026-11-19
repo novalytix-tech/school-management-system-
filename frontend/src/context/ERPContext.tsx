@@ -7,6 +7,7 @@ import React, { createContext, useContext, useState, useEffect, useCallback, use
 import { User, UserRole, SchoolSettings, Student, AppNotification } from '../types';
 import { DEMO_USERS } from '../data/seedData';
 import { ERPStorage } from '../services/storage';
+import { SYNC_ERROR_EVENT } from '../services/notifyBus';
 import { settingsService } from '../services/settingsService';
 import { noticeService } from '../services/noticeService';
 import { messageService } from '../services/messageService';
@@ -285,6 +286,17 @@ export const ERPProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   const removeToast = useCallback((id: string) => {
     setToasts(prev => prev.filter(t => t.id !== id));
   }, []);
+
+  // Surface swallowed backend/sync failures from the (non-React) service layer
+  // as error toasts, so a failed save no longer fails silently.
+  useEffect(() => {
+    const handleSyncError = (e: Event) => {
+      const detail = (e as CustomEvent).detail || {};
+      addToast('error', detail.title || 'Sync Error', detail.message);
+    };
+    window.addEventListener(SYNC_ERROR_EVENT, handleSyncError);
+    return () => window.removeEventListener(SYNC_ERROR_EVENT, handleSyncError);
+  }, [addToast]);
 
   // Persona ↔ entity correlation: the logged-in user's display identity is
   // derived LIVE from the underlying entity record (student / teacher / parent)

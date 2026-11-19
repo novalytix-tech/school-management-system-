@@ -6,6 +6,7 @@
 import { Student } from '../types';
 import { ERPStorage } from './storage';
 import { httpClient } from './api/httpClient';
+import { notifySyncError } from './notifyBus';
 import { recycleBinService } from './recycleBinService';
 import { membershipService } from './membershipService';
 
@@ -138,9 +139,16 @@ export const studentService = {
     store.students = [newStudent, ...store.students];
     ERPStorage.set(store);
 
-    // Persist to PostgreSQL 18 backend
-    httpClient.post('/students', newStudent).catch(err => {
-      console.debug('Failed to sync student to backend:', err);
+    // Persist to PostgreSQL 18 backend; surface a sync failure instead of hiding it.
+    httpClient.post('/students', newStudent).then(res => {
+      if (!res?.success) {
+        notifySyncError(
+          'Student saved locally only',
+          res?.error?.message || 'Could not sync the new student to the database — it may not persist.'
+        );
+      }
+    }).catch(() => {
+      notifySyncError('Student saved locally only', 'Could not reach the server to sync the new student.');
     });
 
     return { success: true, data: newStudent };
@@ -198,9 +206,16 @@ export const studentService = {
       membershipService.recordStatusChange('student', updated, existing.status, updates.status);
     }
 
-    // Persist to PostgreSQL 18 backend
-    httpClient.put(`/students/${id}`, updates).catch(err => {
-      console.debug('Failed to update student on backend:', err);
+    // Persist to PostgreSQL 18 backend; surface a sync failure instead of hiding it.
+    httpClient.put(`/students/${id}`, updates).then(res => {
+      if (!res?.success) {
+        notifySyncError(
+          'Changes saved locally only',
+          res?.error?.message || 'Could not sync the student update to the database — it may not persist.'
+        );
+      }
+    }).catch(() => {
+      notifySyncError('Changes saved locally only', 'Could not reach the server to sync the student update.');
     });
 
     return { success: true, data: updated };
