@@ -206,7 +206,33 @@ export const studentService = {
     return { success: true, data: updated };
   },
 
-  delete: (id: string): boolean => {
+  /**
+   * Deletes a student. For records that exist in the backend (their id is a
+   * database UUID from sync/store) the DELETE is sent to PostgreSQL FIRST and the
+   * local copy is removed only if the server confirms it. This closes the
+   * "ghost login" bug where a student was dropped from localStorage but stayed
+   * active in the database and could still sign in.
+   *
+   * Locally-created, not-yet-synced records (non-UUID ids) are removed locally.
+   * Returns a result object; failures carry a human-readable `error` to surface.
+   */
+  delete: async (id: string): Promise<{ success: boolean; error?: string }> => {
+    const isDbRecord = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(id);
+
+    if (isDbRecord) {
+      const res = await httpClient.delete(`/students/${id}`);
+      // httpClient never throws; it returns { success, error }. Treat a missing
+      // record as already-gone (safe to remove locally); any other failure is
+      // surfaced and the local copy is kept so the roster stays truthful.
+      const notFound = res.error?.code === 'STUDENT_NOT_FOUND';
+      if (!res.success && !notFound) {
+        return {
+          success: false,
+          error: res.error?.message || 'Could not delete the student on the server. Please try again.',
+        };
+      }
+    }
+
     const store = ERPStorage.get();
     const victim = store.students.find(s => s.id === id);
     const initialLen = store.students.length;
@@ -226,9 +252,8 @@ export const studentService = {
         membershipService.recordDeparture('student', victim);
       }
       ERPStorage.set(store);
-      return true;
     }
-    return false;
+    return { success: true };
   },
 
   toggleStatus: (id: string): Student | undefined => {

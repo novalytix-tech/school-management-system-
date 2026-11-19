@@ -5,14 +5,11 @@ import secrets
 from concurrent.futures import ThreadPoolExecutor
 from datetime import date, datetime, timezone
 from flask import Blueprint, request, jsonify, current_app
-from flask_jwt_extended import jwt_required, get_jwt
 from sqlalchemy import or_, and_, insert as sa_insert
 from app.extensions import db
 from app.models import (
-    Student, Parent, StudentParent, StudentEnrollment, StudentPromotion,
-    ClassLevel, Section, AcademicYear, User
+    Student, StudentEnrollment, ClassLevel, Section, AcademicYear, User
 )
-from app.utils.decorators import role_required, permission_required
 from app.utils.tenant import get_current_tenant_id
 from app.utils.errors import APIException
 
@@ -128,7 +125,9 @@ def list_students():
         }), 200
 
     institution_id = get_current_tenant_id()
-    query = Student.query
+    # Never surface soft-deleted students: once removed they must not reappear
+    # in any list or after a store re-hydrate.
+    query = Student.query.filter(Student.is_deleted.is_(False))
 
     if institution_id:
         query = query.filter(Student.institution_id == institution_id)
@@ -146,10 +145,13 @@ def list_students():
         )
         query = query.filter(search_filter)
 
-    # Status filter
+    # Status filter. By default withdrawn students are hidden; callers can still
+    # request them explicitly with ?status=WITHDRAWN.
     status = request.args.get("status")
     if status:
         query = query.filter(Student.status == status.upper())
+    else:
+        query = query.filter(Student.status != "WITHDRAWN")
 
     # Section / Class filter
     section_id = request.args.get("section_id")
@@ -180,9 +182,9 @@ def list_students():
 def get_student(student_id):
     """Retrieve detailed student profile."""
     institution_id = get_current_tenant_id()
-    query = Student.query.filter_by(id=student_id)
+    query = Student.query.filter(Student.id == student_id, Student.is_deleted.is_(False))
     if institution_id:
-        query = query.filter_by(institution_id=institution_id)
+        query = query.filter(Student.institution_id == institution_id)
 
     student = query.first()
     if not student:
@@ -258,7 +260,7 @@ def bulk_import_students():
         raise APIException("Database is not enabled.", status_code=503, error_code="DATABASE_UNAVAILABLE")
 
     from app.utils.security import hash_temp_password
-    from app.models.user import Role, UserRole
+    from app.models.user import UserRole
 
     institution_id = get_current_tenant_id(required=True)
     body = request.get_json(silent=True) or {}
@@ -656,20 +658,45 @@ def update_student(student_id):
 
 @students_bp.route("/<uuid:student_id>", methods=["DELETE"])
 def delete_student(student_id):
-    """Soft-delete / withdraw a student record."""
+    """Soft-delete a student and revoke all access in a single transaction.
+
+    This closes the "ghost login" hole: previously only ``status`` was set to
+    WITHDRAWN while the linked ``users`` row stayed active, so the deleted
+    student could still authenticate. Deleting now (a) soft-deletes and
+    withdraws the student record, (b) deactivates and soft-deletes the linked
+    login account, and (c) deactivates active enrollments so the student leaves
+    every class roster. Any failure rolls the whole change back.
+    """
     institution_id = get_current_tenant_id()
     query = Student.query.filter_by(id=student_id)
     if institution_id:
         query = query.filter_by(institution_id=institution_id)
 
     student = query.first()
-    if not student:
+    if not student or student.is_deleted:
         raise APIException("Student record not found", status_code=404, error_code="STUDENT_NOT_FOUND")
 
-    student.status = "WITHDRAWN"
-    db.session.commit()
+    try:
+        # 1. Soft-delete + withdraw the student record itself.
+        student.status = "WITHDRAWN"
+        student.is_deleted = True
+
+        # 2. Revoke the linked login account so the student can no longer sign in.
+        if student.user:
+            student.user.is_active = False
+            student.user.is_deleted = True
+
+        # 3. Deactivate active enrollments so the student drops off class rosters.
+        for enrollment in student.enrollments:
+            if enrollment.status == "ACTIVE":
+                enrollment.status = "INACTIVE"
+
+        db.session.commit()
+    except Exception:
+        db.session.rollback()
+        raise
 
     return jsonify({
         "success": True,
-        "message": f"Student {student.admission_number} marked as withdrawn."
+        "message": f"Student {student.admission_number} withdrawn and account access revoked."
     }), 200

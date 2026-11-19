@@ -1,19 +1,9 @@
-import uuid
 from datetime import date, datetime
 from flask import Blueprint, request, jsonify, current_app
 from app.extensions import db
 from app.models import (
-    Institution, User, ClassLevel, Section, Subject,
-    Student, StudentEnrollment, Parent, StudentParent,
-    StaffProfile, TeacherProfile,
-    StudentAttendance, StaffAttendance,
-    FeeStructure, FeeInvoice, FeePayment, FinancialTransaction,
-    Exam, ExamSchedule, ExamResult, GradingScale,
-    Book, BookCopy, BookLoan,
-    TransportRoute, TransportStop, TransportVehicle,
-    Notice, Message, LeaveRequest, QuestionPaper
+    Institution, User, ClassLevel, Student, StaffProfile, FeeInvoice, Book, TransportRoute, Notice
 )
-from app.utils.tenant import get_current_tenant_id
 
 sync_bp = Blueprint("sync", __name__, url_prefix="/sync")
 
@@ -265,9 +255,13 @@ def get_store():
                 "institutionId": str(c.institution_id),
             })
 
-    # 3. Students
+    # 3. Students — soft-deleted and withdrawn students are excluded so a deleted
+    # student can never return to the frontend after a store re-hydrate.
     students_data = []
-    students = Student.query.all()
+    students = Student.query.filter(
+        Student.is_deleted.is_(False),
+        Student.status != "WITHDRAWN",
+    ).all()
     for s in students:
         # A single malformed record (e.g. an imported student with no enrollment or a
         # section missing its class level) must never blank out the whole roster.
@@ -311,6 +305,9 @@ def get_store():
                 "gender": s.gender.capitalize() if s.gender else "Male",
                 "dob": s.date_of_birth.isoformat() if s.date_of_birth else "2010-01-01",
                 "bloodGroup": s.blood_group or "O+",
+                # Use the real uploaded avatar when present; the frontend falls
+                # back to a gender-default only when this is empty.
+                "photoUrl": (u.avatar_url if u and u.avatar_url else ""),
                 "classId": class_id,
                 "className": grade_name,
                 "grade": grade_name,

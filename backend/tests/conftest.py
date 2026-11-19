@@ -25,6 +25,10 @@ def app():
     _app = create_app("testing")
 
     with _app.app_context():
+        # The disposable test database starts empty, so build the schema from the
+        # current models before seeding. create_all is idempotent and only ever
+        # runs against TEST_DATABASE_URL (never the production DATABASE_URL).
+        db.create_all()
         # Seed test database once per session
         seed_database(_app)
         yield _app

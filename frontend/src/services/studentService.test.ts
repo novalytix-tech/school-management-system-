@@ -1,11 +1,16 @@
-import { describe, it, expect, beforeEach } from 'vitest';
+import { describe, it, expect, beforeEach, vi, afterEach } from 'vitest';
 import { studentService } from './studentService';
 import { ERPStorage } from './storage';
+import { httpClient } from './api/httpClient';
 
 describe('studentService Student Lifecycle Management', () => {
   beforeEach(() => {
     localStorage.clear();
     ERPStorage.reset();
+  });
+
+  afterEach(() => {
+    vi.restoreAllMocks();
   });
 
   it('retrieves all seeded students and fetches by ID', () => {
@@ -80,14 +85,41 @@ describe('studentService Student Lifecycle Management', () => {
     expect(toggled?.status).not.toBe(initialStatus);
   });
 
-  it('deletes a student record cleanly from storage', () => {
+  it('deletes a locally-created (unsynced) student from storage without a backend call', async () => {
     const students = studentService.getAll();
-    const targetId = students[0].id;
+    const targetId = students[0].id; // seed ids are local, not database UUIDs
 
-    const deleted = studentService.delete(targetId);
-    expect(deleted).toBe(true);
+    const deleteSpy = vi.spyOn(httpClient, 'delete');
+    const res = await studentService.delete(targetId);
 
-    const check = studentService.getById(targetId);
-    expect(check).toBeUndefined();
+    expect(res.success).toBe(true);
+    expect(deleteSpy).not.toHaveBeenCalled(); // non-UUID id => local-only removal
+    expect(studentService.getById(targetId)).toBeUndefined();
+  });
+
+  it('sends DELETE to the backend for a DB-backed student and keeps it locally if the server fails', async () => {
+    // Inject a student whose id is a real database UUID (as sync/store would hydrate).
+    const dbId = '11111111-1111-4111-8111-111111111111';
+    const store = ERPStorage.get();
+    store.students = [{ ...store.students[0], id: dbId, admissionNo: 'DB-UUID-1' }, ...store.students];
+    ERPStorage.set(store);
+
+    // Server rejects the delete -> student must NOT be removed locally (no ghost).
+    const failSpy = vi.spyOn(httpClient, 'delete').mockResolvedValue({
+      success: false,
+      data: null as any,
+      error: { code: 'NETWORK_ERROR', message: 'Server unavailable' },
+    });
+    const failRes = await studentService.delete(dbId);
+    expect(failSpy).toHaveBeenCalledWith(`/students/${dbId}`);
+    expect(failRes.success).toBe(false);
+    expect(failRes.error).toBeTruthy();
+    expect(studentService.getById(dbId)).toBeDefined();
+
+    // Server confirms the delete -> student is removed locally.
+    vi.spyOn(httpClient, 'delete').mockResolvedValue({ success: true, data: null as any });
+    const okRes = await studentService.delete(dbId);
+    expect(okRes.success).toBe(true);
+    expect(studentService.getById(dbId)).toBeUndefined();
   });
 });

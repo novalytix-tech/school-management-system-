@@ -4,10 +4,14 @@ import uuid
 from datetime import datetime, timezone, timedelta
 from typing import Optional, Dict, Any, Tuple
 from sqlalchemy import func
+from sqlalchemy.orm import selectinload, joinedload
 from flask import current_app
 from flask_jwt_extended import create_access_token, create_refresh_token
 from app.extensions import db
-from app.models import User, Role, Institution, TokenBlocklist, PasswordReset, AuditLog
+from app.models import (
+    User, Role, UserRole, RolePermission,
+    TokenBlocklist, PasswordReset, AuditLog,
+)
 from app.utils.errors import APIException
 from app.utils.security import (
     hash_password, verify_password, check_needs_rehash,
@@ -56,7 +60,27 @@ class AuthService:
             last10 = digits[-10:]
             filter_condition = filter_condition | (User.phone.like(f"%{last10}%"))
 
-        user = User.query.filter(filter_condition).first()
+        # Eager-load the full identity graph (roles → permissions) and the
+        # institution in a handful of batched queries. Without this, role_names
+        # and permissions below trigger a cascade of lazy loads (one query per
+        # role, per role-permission and per permission). Over a cross-region DB
+        # link (e.g. Vercel/Render → Supabase Mumbai) each round-trip is ~150ms,
+        # so that N+1 turns login into a multi-second request.
+        user = (
+            User.query
+            .options(
+                selectinload(User.user_roles)
+                .selectinload(UserRole.role)
+                .selectinload(Role.role_permissions)
+                .selectinload(RolePermission.permission),
+                joinedload(User.institution),
+            )
+            .filter(filter_condition)
+            # Soft-deleted accounts must never resolve: a student removed by an
+            # admin cannot authenticate, even if a stale users row lingers.
+            .filter(User.is_deleted.is_(False))
+            .first()
+        )
 
         # Generic error message to prevent account enumeration
         generic_error = "Invalid email or password."
@@ -107,9 +131,24 @@ class AuthService:
                 error_code="ACCOUNT_NOT_VERIFIED"
             )
 
-        # Check institution status if user belongs to one
+        # Defence in depth against "ghost logins": reject access when the linked
+        # student profile has been withdrawn or soft-deleted, even if the users
+        # row itself was somehow left active (e.g. legacy data). The is_deleted
+        # lookup filter above already blocks properly-deleted accounts.
+        from app.models import Student
+        linked_student = Student.query.filter_by(user_id=user.id).first()
+        if linked_student and (linked_student.is_deleted or linked_student.status == "WITHDRAWN"):
+            raise APIException(
+                message="This account is no longer active. Please contact school administration.",
+                status_code=403,
+                error_code="ACCOUNT_REVOKED"
+            )
+
+        # Check institution status if user belongs to one. The institution is
+        # already eager-loaded above, so reuse it instead of issuing another
+        # cross-region query on every login.
         if user.institution_id:
-            inst = Institution.query.filter_by(id=user.institution_id).populate_existing().first()
+            inst = user.institution
             if inst and inst.status != "ACTIVE":
                 raise APIException(
                     message="Institution access is currently suspended or inactive. Please contact support.",

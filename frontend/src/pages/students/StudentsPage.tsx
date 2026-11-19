@@ -339,11 +339,16 @@ const StudentDirectoryManager: React.FC = () => {
     }
   };
 
-  const handleDelete = () => {
+  const handleDelete = async () => {
     if (!['school_admin', 'super_admin'].includes(currentRole)) return;
     if (deleteTarget) {
-      studentService.delete(deleteTarget.id);
-      addToast('warning', 'Student Deleted', `${deleteTarget.fullName} was removed from the directory.`);
+      const target = deleteTarget;
+      const res = await studentService.delete(target.id);
+      if (res.success) {
+        addToast('warning', 'Student Deleted', `${target.fullName} was removed and their login access revoked.`);
+      } else {
+        addToast('error', 'Delete Failed', res.error || `${target.fullName} could not be deleted. Please try again.`);
+      }
       setDeleteTarget(null);
       refreshList();
     }
@@ -371,13 +376,17 @@ const StudentDirectoryManager: React.FC = () => {
   const toggleRow = (id: string) =>
     setSelectedIds(prev => (prev.includes(id) ? prev.filter(x => x !== id) : [...prev, id]));
 
-  const handleDeleteMany = (ids: string[]) => {
+  const handleDeleteMany = async (ids: string[]) => {
     if (!canModify) return;
-    let n = 0;
-    ids.forEach(id => {
-      if (studentService.delete(id)) n++;
-    });
-    addToast('warning', 'Students Deleted', `${n} student record(s) removed from the directory.`);
+    const results = await Promise.all(ids.map(id => studentService.delete(id)));
+    const n = results.filter(r => r.success).length;
+    const failed = results.length - n;
+    if (n > 0) {
+      addToast('warning', 'Students Deleted', `${n} student record(s) removed and their login access revoked.`);
+    }
+    if (failed > 0) {
+      addToast('error', 'Some Deletes Failed', `${failed} student record(s) could not be deleted on the server and were kept.`);
+    }
     setSelectedIds([]);
     refreshList();
   };
