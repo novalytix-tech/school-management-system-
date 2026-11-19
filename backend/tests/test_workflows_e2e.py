@@ -89,7 +89,8 @@ def test_workflow_a_admission_to_enrollment(client, auth_headers):
     assert enroll_res.status_code == 200
     assert enroll_res.get_json()["data"]["status"] == "ENROLLED"
 
-    # 4. Create Permanent Student Record
+    # 4. Create Permanent Student Record (a valid Class + Section is now required)
+    enroll_section_id = str(Section.query.first().id)
     student_res = client.post("/api/v1/students", json={
         "admission_number": adm_num,
         "first_name": "Aarav",
@@ -100,6 +101,7 @@ def test_workflow_a_admission_to_enrollment(client, auth_headers):
         "email": f"aarav.mehta.{ts}@student.stxaviers.edu.in",
         "emergency_contact_name": "Vikram Mehta",
         "emergency_contact_phone": "+91 98333 11224",
+        "section_id": enroll_section_id,
     }, headers=headers)
     assert student_res.status_code == 201
     created_student = student_res.get_json()["data"]

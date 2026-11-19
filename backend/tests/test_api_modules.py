@@ -8,8 +8,12 @@ from app.models import (
 )
 
 
-def test_students_crud_and_validation(client, auth_headers):
+def test_students_crud_and_validation(client, auth_headers, app):
     headers = auth_headers("principal@stxaviers.edu.in")
+
+    # A valid Class + Section is now mandatory on create (Task 2 integrity rule).
+    with app.app_context():
+        section_id = str(Section.query.first().id)
 
     # 1. List students
     res = client.get("/api/v1/students", headers=headers)
@@ -31,6 +35,7 @@ def test_students_crud_and_validation(client, auth_headers):
         "email": f"{adm_no.lower()}@student.stxaviers.edu.in",
         "emergency_contact_name": "Suresh Gupta",
         "emergency_contact_phone": "+91 98765 11223",
+        "section_id": section_id,
     }
     create_res = client.post("/api/v1/students", json=create_payload, headers=headers)
     assert create_res.status_code == 201

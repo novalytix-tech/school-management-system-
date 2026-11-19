@@ -22,8 +22,9 @@ PASSWORDS = {
     "aarav.sharma@student.stxaviers.edu.in": "StudDev#Test1",
 }
 
-# Every (rule, method) pair registered before the database was disconnected.
-EXPECTED_ROUTE_COUNT = 85
+# Every (rule, method) pair registered. Bump this when routes are added.
+# 85 baseline + 1 (GET /api/v1/guardians, Task 2 Guardian list) = 86.
+EXPECTED_ROUTE_COUNT = 86
 
 
 @pytest.fixture(scope="module")
@@ -103,6 +104,7 @@ def test_all_api_routes_still_registered(app):
     for expected in [
         ("/api/v1/health", "GET"), ("/api/v1/auth/login", "POST"), ("/api/v1/sync/store", "GET"),
         ("/api/v1/students", "POST"), ("/api/v1/finance/invoices/<uuid:invoice_id>/pay", "POST"),
+        ("/api/v1/guardians", "GET"),
     ]:
         assert expected in pairs
 

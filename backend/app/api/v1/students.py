@@ -210,13 +210,16 @@ def _import_lookups(institution_id):
         return cache["value"]
 
     sections_map = {}
-    for sec_id, sec_name, cls_name in (
-        db.session.query(Section.id, Section.name, ClassLevel.name)
+    sections_without_teacher = set()
+    for sec_id, sec_name, cls_name, class_teacher_id in (
+        db.session.query(Section.id, Section.name, ClassLevel.name, Section.class_teacher_id)
         .join(ClassLevel, Section.class_level_id == ClassLevel.id)
         .filter(ClassLevel.institution_id == institution_id)
         .all()
     ):
         sections_map[((cls_name or "").strip().lower(), (sec_name or "").strip().lower())] = sec_id
+        if class_teacher_id is None:
+            sections_without_teacher.add(sec_id)
 
     role = Role.query.filter_by(name="student").first()
     year = (
@@ -229,6 +232,7 @@ def _import_lookups(institution_id):
         role.id if role else None,
         year.id if year else None,
         year.name if year else "2026-2027",
+        sections_without_teacher,
     )
     _LOOKUP_CACHE.update({"key": str(institution_id), "at": now, "value": value})
     return value
@@ -286,10 +290,15 @@ def bulk_import_students():
 
     # Sections / role / academic year change rarely, so they are cached briefly and
     # cost zero round-trips on every batch after the first.
-    sections_map, student_role_id, year_id, year_name = _import_lookups(institution_id)
+    sections_map, student_role_id, year_id, year_name, sections_without_teacher = _import_lookups(institution_id)
+    if not year_id:
+        raise APIException(
+            "No academic year is configured; cannot import students.",
+            status_code=400, error_code="NO_ACADEMIC_YEAR",
+        )
 
     # ---------- Validate + prepare entirely in memory ----------
-    prepared, errors = [], []
+    prepared, errors, import_warnings = [], [], set()
     for i, row in enumerate(rows):
         csv_row = row_offset + i + 2  # +2: header line plus 1-based numbering
 
@@ -297,6 +306,23 @@ def bulk_import_students():
         if not full_name:
             errors.append({"row": csv_row, "name": "", "reason": "Name is missing"})
             continue
+
+        # Integrity rule (Task 2): resolve the Class + Section up front. A row that
+        # can't be mapped to an existing section is a surfaced error (skipped),
+        # never a silent import of a student with no enrollment.
+        class_name_val = (row.get("className") or row.get("class") or "").strip()
+        section_val = (row.get("section") or "").strip()
+        resolved_section_id = sections_map.get((class_name_val.lower(), section_val.lower()))
+        if not resolved_section_id:
+            errors.append({
+                "row": csv_row,
+                "name": full_name,
+                "reason": f"Class/Section '{class_name_val or '—'} / {section_val or '—'}' not found. "
+                          "Assign a valid existing class and section.",
+            })
+            continue
+        if resolved_section_id in sections_without_teacher:
+            import_warnings.add(f"{class_name_val} {section_val}".strip())
 
         parts = full_name.split(" ")
         first_name = (row.get("firstName") or parts[0] or full_name).strip()
@@ -339,8 +365,9 @@ def bulk_import_students():
             "gender": (row.get("gender") or "OTHER"),
             "blood_group": row.get("bloodGroup") or row.get("blood_group"),
             "phone": row.get("parentPhone") or row.get("phone"),
-            "class_name": (row.get("className") or row.get("class") or "").strip(),
-            "section": (row.get("section") or "").strip(),
+            "class_name": class_name_val,
+            "section": section_val,
+            "section_id": resolved_section_id,
             "roll_no": row.get("rollNo") or row.get("roll_number"),
             "parent_name": row.get("parentName") or "Guardian",
             "parent_email": row.get("parentEmail") or "",
@@ -404,18 +431,17 @@ def bulk_import_students():
             "status": "ACTIVE",
         })
 
-        section_id = sections_map.get((p["class_name"].lower(), p["section"].lower()))
-        if section_id and year_id:
-            enroll_rows.append({
-                **base,
-                "id": uuid.uuid4(),
-                "student_id": student_id,
-                "academic_year_id": year_id,
-                "section_id": section_id,
-                "roll_number": p["roll_no"],
-                "enrollment_date": today,
-                "status": "ACTIVE",
-            })
+        # Every prepared row has a validated section, so enrollment is unconditional.
+        enroll_rows.append({
+            **base,
+            "id": uuid.uuid4(),
+            "student_id": student_id,
+            "academic_year_id": year_id,
+            "section_id": p["section_id"],
+            "roll_number": p["roll_no"],
+            "enrollment_date": today,
+            "status": "ACTIVE",
+        })
 
         created.append({
             "id": str(student_id),
@@ -474,6 +500,7 @@ def bulk_import_students():
             "imported": len(created),
             "skipped": len(errors),
             "errors": errors,
+            "warnings": sorted(import_warnings),
         },
         "message": str(len(created)) + " student(s) imported, " + str(len(errors)) + " skipped.",
     }), 201
@@ -510,6 +537,44 @@ def create_student():
     exists = Student.query.filter_by(institution_id=institution_id, admission_number=admission_no.strip()).first()
     if exists:
         raise APIException(f"Admission number '{admission_no}' already exists in this institution", status_code=409, error_code="DUPLICATE_ADMISSION_NO")
+
+    # --- Integrity rule (Task 2): every student must be assigned to a valid
+    # Class + Section. Validate BEFORE creating any user/student rows so a
+    # rejected request writes nothing. ---
+    section_ref = payload.get("section_id") or payload.get("sectionId") or payload.get("classId")
+    if not section_ref:
+        raise APIException(
+            "A student must be assigned to a class and section.",
+            status_code=400, error_code="SECTION_REQUIRED",
+        )
+    try:
+        section_uuid = uuid.UUID(str(section_ref))
+    except (ValueError, TypeError):
+        raise APIException(
+            "Invalid class/section identifier.",
+            status_code=400, error_code="INVALID_SECTION_ID",
+        )
+    section_obj = Section.query.filter_by(id=section_uuid).first()
+    if not section_obj or not section_obj.class_level or section_obj.class_level.institution_id != institution_id:
+        raise APIException(
+            "The selected class/section was not found for this institution.",
+            status_code=400, error_code="SECTION_NOT_FOUND",
+        )
+    active_year = (
+        AcademicYear.query.filter_by(institution_id=institution_id, is_current=True).first()
+        or AcademicYear.query.filter_by(institution_id=institution_id).first()
+    )
+    if not active_year:
+        raise APIException(
+            "No academic year is configured; cannot enroll the student.",
+            status_code=400, error_code="NO_ACADEMIC_YEAR",
+        )
+    warnings = []
+    if not section_obj.class_teacher_id:
+        warnings.append(
+            f"Section '{section_obj.name}' has no class teacher assigned. "
+            "Assign a class teacher to complete the record."
+        )
 
     dob = payload.get("date_of_birth") or payload.get("dob")
     if dob:
@@ -577,31 +642,28 @@ def create_student():
     db.session.add(student)
     db.session.flush()
 
-    # Section / Enrollment
-    section_id = payload.get("section_id") or payload.get("sectionId")
-    if section_id:
-        active_year = AcademicYear.query.filter_by(institution_id=institution_id, is_current=True).first()
-        if not active_year:
-            active_year = AcademicYear.query.filter_by(institution_id=institution_id).first()
-
-        if active_year:
-            enrollment = StudentEnrollment(
-                student_id=student.id,
-                academic_year_id=active_year.id,
-                section_id=uuid.UUID(str(section_id)),
-                roll_number=payload.get("roll_number") or payload.get("rollNo"),
-                enrollment_date=date.today(),
-                status="ACTIVE",
-            )
-            db.session.add(enrollment)
+    # Enrollment — section and academic year were validated above, so every
+    # created student is guaranteed an active Class + Section (no orphans).
+    enrollment = StudentEnrollment(
+        student_id=student.id,
+        academic_year_id=active_year.id,
+        section_id=section_uuid,
+        roll_number=payload.get("roll_number") or payload.get("rollNo"),
+        enrollment_date=date.today(),
+        status="ACTIVE",
+    )
+    db.session.add(enrollment)
 
     db.session.commit()
 
-    return jsonify({
+    resp = {
         "success": True,
         "data": _serialize_student(student),
-        "message": f"Student {student.admission_number} created successfully."
-    }), 201
+        "message": f"Student {student.admission_number} created successfully.",
+    }
+    if warnings:
+        resp["warnings"] = warnings
+    return jsonify(resp), 201
 
 
 @students_bp.route("/<uuid:student_id>", methods=["PUT", "PATCH"])

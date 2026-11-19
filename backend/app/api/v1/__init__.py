@@ -3,6 +3,7 @@ from app.api.v1.system import system_bp
 from app.api.v1.auth import auth_bp
 from app.api.v1.test_routes import test_bp
 from app.api.v1.students import students_bp
+from app.api.v1.guardians import guardians_bp
 from app.api.v1.academics import academics_bp
 from app.api.v1.admissions import admissions_bp
 from app.api.v1.attendance import attendance_bp
@@ -24,6 +25,7 @@ api_v1_bp.register_blueprint(system_bp)
 api_v1_bp.register_blueprint(auth_bp)
 api_v1_bp.register_blueprint(test_bp)
 api_v1_bp.register_blueprint(students_bp)
+api_v1_bp.register_blueprint(guardians_bp)
 api_v1_bp.register_blueprint(academics_bp)
 api_v1_bp.register_blueprint(admissions_bp)
 api_v1_bp.register_blueprint(attendance_bp)
