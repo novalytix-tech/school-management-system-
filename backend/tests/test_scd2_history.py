@@ -3,16 +3,25 @@ Task 3 tests: SCD Type 2 history for students.
 Editing creates a new current version while the prior one stays queryable with
 correct validity dates; deletes record a final DELETE version; imports seed an
 initial version. Opt-in (runs only with TEST_DATABASE_URL set).
+
+Tenant is pinned to the seeded institution via the X-Institution-Id header so the
+tests are deterministic even when other tests add extra institutions.
 """
 from datetime import datetime, timezone
 
 from app.models import Student, StudentHistory, Section, ClassLevel, Institution
 
 
+def _tenant():
+    return Institution.query.filter_by(code="STXAV-DELHI").first()
+
+
+def _headers():
+    return {"X-Institution-Id": str(_tenant().id)}
+
+
 def _a_section():
-    # A section in the first ACTIVE institution (the tenant the endpoint resolves),
-    # so the test is robust when other tests add extra institutions.
-    inst = Institution.query.filter_by(status="ACTIVE").first()
+    inst = _tenant()
     return (
         Section.query.join(ClassLevel, Section.class_level_id == ClassLevel.id)
         .filter(ClassLevel.institution_id == inst.id)
@@ -20,18 +29,14 @@ def _a_section():
     )
 
 
-def _section_id():
-    return str(_a_section().id)
-
-
 def _create(client, suffix, first="Orig", last="Name"):
     adm = f"SCD-{suffix}-{int(datetime.now(timezone.utc).timestamp()*1000)}"
-    res = client.post("/api/v1/students", json={
+    res = client.post("/api/v1/students", headers=_headers(), json={
         "admission_number": adm,
         "first_name": first, "last_name": last,
         "gender": "Male", "date_of_birth": "2011-01-01",
         "email": f"{adm.lower()}@student.stxaviers.edu.in",
-        "section_id": _section_id(),
+        "section_id": str(_a_section().id),
     })
     assert res.status_code == 201, res.get_json()
     return res.get_json()["data"]["id"], adm
@@ -39,7 +44,7 @@ def _create(client, suffix, first="Orig", last="Name"):
 
 def test_create_records_initial_version(client):
     sid, adm = _create(client, "CREATE")
-    res = client.get(f"/api/v1/students/{sid}/history")
+    res = client.get(f"/api/v1/students/{sid}/history", headers=_headers())
     assert res.status_code == 200
     data = res.get_json()["data"]
     assert data["total"] == 1
@@ -48,33 +53,30 @@ def test_create_records_initial_version(client):
     assert v["operation"] == "CREATE"
     assert v["is_current"] is True
     assert v["valid_to"] is None
-    assert v["class_name"] and v["section_name"]  # enrollment snapshot captured
+    assert v["class_name"] and v["section_name"]
 
 
 def test_edit_creates_new_current_version_prior_stays_queryable(client):
     sid, adm = _create(client, "EDIT", first="Before")
 
-    upd = client.put(f"/api/v1/students/{sid}", json={"first_name": "After"})
+    upd = client.put(f"/api/v1/students/{sid}", headers=_headers(), json={"first_name": "After"})
     assert upd.status_code == 200
 
-    data = client.get(f"/api/v1/students/{sid}/history").get_json()["data"]
+    data = client.get(f"/api/v1/students/{sid}/history", headers=_headers()).get_json()["data"]
     assert data["total"] == 2
     newest, prior = data["versions"][0], data["versions"][1]
 
-    # New current version reflects the edit.
     assert newest["version_number"] == 2
     assert newest["operation"] == "UPDATE"
     assert newest["is_current"] is True
     assert newest["valid_to"] is None
     assert newest["first_name"] == "After"
 
-    # Prior version is closed but still queryable with its original value + dates.
     assert prior["version_number"] == 1
     assert prior["is_current"] is False
     assert prior["valid_to"] is not None
     assert prior["first_name"] == "Before"
 
-    # Exactly one current version in the DB.
     current = StudentHistory.query.filter_by(student_id=sid, is_current=True).count()
     assert current == 1
 
@@ -82,9 +84,9 @@ def test_edit_creates_new_current_version_prior_stays_queryable(client):
 def test_multiple_edits_keep_single_current(client):
     sid, _ = _create(client, "MULTI")
     for name in ["A", "B", "C"]:
-        assert client.put(f"/api/v1/students/{sid}", json={"first_name": name}).status_code == 200
+        assert client.put(f"/api/v1/students/{sid}", headers=_headers(), json={"first_name": name}).status_code == 200
 
-    data = client.get(f"/api/v1/students/{sid}/history").get_json()["data"]
+    data = client.get(f"/api/v1/students/{sid}/history", headers=_headers()).get_json()["data"]
     assert data["total"] == 4  # 1 create + 3 edits
     assert sum(1 for v in data["versions"] if v["is_current"]) == 1
     assert data["versions"][0]["first_name"] == "C"
@@ -92,9 +94,9 @@ def test_multiple_edits_keep_single_current(client):
 
 def test_delete_records_delete_version(client):
     sid, _ = _create(client, "DEL")
-    assert client.delete(f"/api/v1/students/{sid}").status_code == 200
+    assert client.delete(f"/api/v1/students/{sid}", headers=_headers()).status_code == 200
 
-    data = client.get(f"/api/v1/students/{sid}/history").get_json()["data"]
+    data = client.get(f"/api/v1/students/{sid}/history", headers=_headers()).get_json()["data"]
     newest = data["versions"][0]
     assert newest["operation"] == "DELETE"
     assert newest["is_current"] is True
@@ -107,7 +109,7 @@ def test_bulk_import_seeds_initial_version(client):
     cls_name = section.class_level.name
     stamp = int(datetime.now(timezone.utc).timestamp() * 1000)
     adm = f"SCD-IMP-{stamp}"
-    res = client.post("/api/v1/students/bulk-import", json={"students": [{
+    res = client.post("/api/v1/students/bulk-import", headers=_headers(), json={"students": [{
         "fullName": "Hist Imported", "admissionNo": adm,
         "className": cls_name, "section": section.name,
         "gender": "Female", "dob": "2012-05-05",
@@ -125,5 +127,5 @@ def test_bulk_import_seeds_initial_version(client):
 
 def test_history_404_for_unknown_student(client):
     import uuid
-    res = client.get(f"/api/v1/students/{uuid.uuid4()}/history")
+    res = client.get(f"/api/v1/students/{uuid.uuid4()}/history", headers=_headers())
     assert res.status_code == 404

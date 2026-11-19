@@ -134,15 +134,18 @@ class AuthService:
         # Defence in depth against "ghost logins": reject access when the linked
         # student profile has been withdrawn or soft-deleted, even if the users
         # row itself was somehow left active (e.g. legacy data). The is_deleted
-        # lookup filter above already blocks properly-deleted accounts.
-        from app.models import Student
-        linked_student = Student.query.filter_by(user_id=user.id).first()
-        if linked_student and (linked_student.is_deleted or linked_student.status == "WITHDRAWN"):
-            raise APIException(
-                message="This account is no longer active. Please contact school administration.",
-                status_code=403,
-                error_code="ACCOUNT_REVOKED"
-            )
+        # lookup filter above already blocks properly-deleted accounts. Only the
+        # student role can have a student profile, so this extra round-trip is
+        # skipped for every other role (admins, teachers, parents, suppliers).
+        if "student" in user.role_names:
+            from app.models import Student
+            linked_student = Student.query.filter_by(user_id=user.id).first()
+            if linked_student and (linked_student.is_deleted or linked_student.status == "WITHDRAWN"):
+                raise APIException(
+                    message="This account is no longer active. Please contact school administration.",
+                    status_code=403,
+                    error_code="ACCOUNT_REVOKED"
+                )
 
         # Check institution status if user belongs to one. The institution is
         # already eager-loaded above, so reuse it instead of issuing another
@@ -195,6 +198,38 @@ class AuthService:
             additional_claims=refresh_claims
         )
 
+        # Build the response payload from the already-loaded identity graph BEFORE
+        # committing. expire_on_commit would otherwise expire the eager-loaded user
+        # and institution, forcing two extra SELECTs just to serialize the response.
+        inst_data = None
+        if user.institution:
+            inst_data = {
+                "id": str(user.institution.id),
+                "code": user.institution.code,
+                "name": user.institution.name,
+                "subdomain": user.institution.subdomain,
+                "board_affiliation": user.institution.board_affiliation,
+                "currency": user.institution.currency,
+                "status": user.institution.status,
+            }
+        user_payload = {
+            "id": str(user.id),
+            "username": user.username,
+            "email": user.email,
+            "first_name": user.first_name,
+            "last_name": user.last_name,
+            "full_name": user.full_name,
+            "phone": user.phone,
+            "avatar_url": user.avatar_url,
+            "roles": roles,
+            "permissions": permissions,
+            "institution_id": inst_id_str,
+            "institution": inst_data,
+            "is_active": user.is_active,
+            "is_verified": user.is_verified,
+            "must_change_password": getattr(user, "must_change_password", False),
+        }
+
         # Update last login timestamp
         user.last_login_at = datetime.now(timezone.utc)
 
@@ -213,37 +248,8 @@ class AuthService:
         db.session.add(audit)
         db.session.commit()
 
-        # Build institution dictionary
-        inst_data = None
-        if user.institution:
-            inst_data = {
-                "id": str(user.institution.id),
-                "code": user.institution.code,
-                "name": user.institution.name,
-                "subdomain": user.institution.subdomain,
-                "board_affiliation": user.institution.board_affiliation,
-                "currency": user.institution.currency,
-                "status": user.institution.status,
-            }
-
         return {
-            "user": {
-                "id": str(user.id),
-                "username": user.username,
-                "email": user.email,
-                "first_name": user.first_name,
-                "last_name": user.last_name,
-                "full_name": user.full_name,
-                "phone": user.phone,
-                "avatar_url": user.avatar_url,
-                "roles": roles,
-                "permissions": permissions,
-                "institution_id": inst_id_str,
-                "institution": inst_data,
-                "is_active": user.is_active,
-                "is_verified": user.is_verified,
-                "must_change_password": getattr(user, "must_change_password", False),
-            },
+            "user": user_payload,
             "access_token": access_token,
             "refresh_token": refresh_token,
             "token_type": "Bearer",

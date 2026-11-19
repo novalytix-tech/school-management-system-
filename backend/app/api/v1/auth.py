@@ -3,8 +3,9 @@ from flask import Blueprint, request, jsonify, current_app
 from flask_jwt_extended import (
     jwt_required, get_jwt, get_jwt_identity, decode_token
 )
+from sqlalchemy.orm import selectinload, joinedload
 from app.extensions import limiter, db
-from app.models import User, Student, StaffProfile, Parent
+from app.models import User, Student, StaffProfile, Parent, Role, UserRole, RolePermission
 from app.services.auth_service import AuthService
 from app.services.dev_auth_service import DevAuthService, is_dev_auth_active
 from app.utils.errors import APIException, DatabaseUnavailableError
@@ -336,7 +337,21 @@ def get_current_user_profile():
             "message": "User profile retrieved successfully (development auth mode; no database)."
         }), 200
 
-    user = db.session.get(User, user_id)
+    # Eager-load the identity graph (roles -> permissions) and institution in a
+    # few batched queries instead of lazy-loading each (an N+1 storm over the
+    # cross-region DB link).
+    user = (
+        User.query
+        .options(
+            selectinload(User.user_roles)
+            .selectinload(UserRole.role)
+            .selectinload(Role.role_permissions)
+            .selectinload(RolePermission.permission),
+            joinedload(User.institution),
+        )
+        .filter(User.id == user_id)
+        .first()
+    )
 
     if not user:
         raise APIException(message="User not found.", status_code=404, error_code="USER_NOT_FOUND")
@@ -354,20 +369,26 @@ def get_current_user_profile():
             "logo_url": user.institution.logo_url,
         }
 
-    # Reference profiles
+    # Reference profiles — only look up the profile table(s) relevant to the
+    # user's role(s) instead of querying Student + StaffProfile + Parent for
+    # everyone (saves two cross-region round-trips per call).
+    roles = user.role_names
     reference_data = {}
-    student_profile = Student.query.filter_by(user_id=user.id).first()
-    if student_profile:
-        reference_data["student_id"] = str(student_profile.id)
-        reference_data["admission_number"] = student_profile.admission_number
 
-    staff_profile = StaffProfile.query.filter_by(user_id=user.id).first()
-    if staff_profile:
-        reference_data["staff_id"] = str(staff_profile.id)
-        reference_data["employee_id"] = staff_profile.employee_id
-        reference_data["designation"] = staff_profile.designation
+    if "student" in roles:
+        student_profile = Student.query.filter_by(user_id=user.id).first()
+        if student_profile:
+            reference_data["student_id"] = str(student_profile.id)
+            reference_data["admission_number"] = student_profile.admission_number
 
-    parent_profile = Parent.query.filter_by(user_id=user.id).first()
+    if any(r in roles for r in ("teacher", "school_admin", "super_admin")):
+        staff_profile = StaffProfile.query.filter_by(user_id=user.id).first()
+        if staff_profile:
+            reference_data["staff_id"] = str(staff_profile.id)
+            reference_data["employee_id"] = staff_profile.employee_id
+            reference_data["designation"] = staff_profile.designation
+
+    parent_profile = Parent.query.filter_by(user_id=user.id).first() if "parent" in roles else None
     if parent_profile:
         reference_data["parent_id"] = str(parent_profile.id)
         # Linked children list

@@ -2,6 +2,11 @@
 Task 2 tests: Student -> Class+Section integrity enforcement, bulk-import
 surfacing of unresolved sections, and the Guardian list endpoint.
 Opt-in (runs only with TEST_DATABASE_URL set).
+
+Tenant is pinned to the seeded institution via the X-Institution-Id header so the
+tests are deterministic even when other tests add extra institutions (the
+endpoints' get_current_tenant_id falls back to an arbitrary ACTIVE institution
+otherwise).
 """
 import uuid
 from datetime import date, datetime, timezone
@@ -14,15 +19,17 @@ from app.models import (
 from app.utils.security import hash_password
 
 
-def _primary_institution():
-    # Mirror get_current_tenant_id(): the first ACTIVE institution.
-    return Institution.query.filter_by(status="ACTIVE").first()
+def _tenant():
+    # Seeded demo institution — deterministic regardless of what other tests add.
+    return Institution.query.filter_by(code="STXAV-DELHI").first()
+
+
+def _headers():
+    return {"X-Institution-Id": str(_tenant().id)}
 
 
 def _a_section():
-    # Pick a section that belongs to the SAME institution the endpoint resolves,
-    # so the test is robust when other tests add extra institutions.
-    inst = _primary_institution()
+    inst = _tenant()
     return (
         Section.query.join(ClassLevel, Section.class_level_id == ClassLevel.id)
         .filter(ClassLevel.institution_id == inst.id)
@@ -34,7 +41,7 @@ def _a_section():
 
 def test_create_student_requires_section(client):
     adm = f"ENF-NOSEC-{int(datetime.now(timezone.utc).timestamp()*1000)}"
-    res = client.post("/api/v1/students", json={
+    res = client.post("/api/v1/students", headers=_headers(), json={
         "admission_number": adm,
         "first_name": "No", "last_name": "Section",
         "gender": "Male", "date_of_birth": "2011-01-01",
@@ -43,13 +50,12 @@ def test_create_student_requires_section(client):
     body = res.get_json()
     assert body["success"] is False
     assert body["error"]["code"] == "SECTION_REQUIRED"
-    # Nothing should have been created.
     assert Student.query.filter_by(admission_number=adm).first() is None
 
 
 def test_create_student_invalid_section_is_rejected(client):
     adm = f"ENF-BADSEC-{int(datetime.now(timezone.utc).timestamp()*1000)}"
-    res = client.post("/api/v1/students", json={
+    res = client.post("/api/v1/students", headers=_headers(), json={
         "admission_number": adm,
         "first_name": "Bad", "last_name": "Section",
         "gender": "Female", "date_of_birth": "2011-01-01",
@@ -63,7 +69,7 @@ def test_create_student_invalid_section_is_rejected(client):
 def test_create_student_with_valid_section_enrolls(client):
     section = _a_section()
     adm = f"ENF-OK-{int(datetime.now(timezone.utc).timestamp()*1000)}"
-    res = client.post("/api/v1/students", json={
+    res = client.post("/api/v1/students", headers=_headers(), json={
         "admission_number": adm,
         "first_name": "Good", "last_name": "Record",
         "gender": "Male", "date_of_birth": "2011-01-01",
@@ -75,7 +81,6 @@ def test_create_student_with_valid_section_enrolls(client):
     assert data["class_info"] is not None
     assert data["class_info"]["section_id"] == str(section.id)
 
-    # The student has an active enrollment in the DB (no orphan).
     student = Student.query.filter_by(admission_number=adm).first()
     assert student is not None
     active = [e for e in student.enrollments if e.status == "ACTIVE"]
@@ -90,14 +95,14 @@ def test_bulk_import_surfaces_unresolved_section(client):
     cls_name = section.class_level.name
     stamp = int(datetime.now(timezone.utc).timestamp() * 1000)
 
-    res = client.post("/api/v1/students/bulk-import", json={"students": [
-        {  # resolvable -> imported + enrolled
+    res = client.post("/api/v1/students/bulk-import", headers=_headers(), json={"students": [
+        {
             "fullName": "Imported Ok",
             "admissionNo": f"IMP-OK-{stamp}",
             "className": cls_name, "section": section.name,
             "gender": "Male", "dob": "2012-02-02",
         },
-        {  # unresolvable class/section -> surfaced error, skipped (not silently imported)
+        {
             "fullName": "Imported Bad",
             "admissionNo": f"IMP-BAD-{stamp}",
             "className": "NoSuchClass", "section": "Z",
@@ -111,21 +116,36 @@ def test_bulk_import_surfaces_unresolved_section(client):
     reasons = " ".join(e["reason"] for e in data["errors"])
     assert "not found" in reasons.lower()
 
-    # The good row is persisted AND enrolled; the bad row created nothing.
     good = Student.query.filter_by(admission_number=f"IMP-OK-{stamp}").first()
     assert good is not None
     assert any(e.status == "ACTIVE" for e in good.enrollments)
     assert Student.query.filter_by(admission_number=f"IMP-BAD-{stamp}").first() is None
 
 
+def test_bulk_import_accepts_explicit_section_id(client):
+    section = _a_section()
+    stamp = int(datetime.now(timezone.utc).timestamp() * 1000)
+    adm = f"IMP-SID-{stamp}"
+    res = client.post("/api/v1/students/bulk-import", headers=_headers(), json={"students": [{
+        "fullName": "SectionId Import", "admissionNo": adm,
+        "section_id": str(section.id),  # explicit; no className/section provided
+        "gender": "Male", "dob": "2012-01-01",
+    }]})
+    assert res.status_code == 201
+    data = res.get_json()["data"]
+    assert data["imported"] == 1
+    assert "warnings" in data
+    student = Student.query.filter_by(admission_number=adm).first()
+    assert student is not None
+    assert any(e.status == "ACTIVE" and str(e.section_id) == str(section.id) for e in student.enrollments)
+
+
 # --------------------------- guardian list endpoint ---------------------------
 
 def test_guardians_list_returns_linked_students(client):
-    inst = _primary_institution()
-    section = _a_section()
+    inst = _tenant()
     stamp = int(datetime.now(timezone.utc).timestamp() * 1000)
 
-    # Create a student (with user) and a guardian linked to them.
     suser = User(
         institution_id=inst.id, username=f"gstud_{stamp}",
         email=f"gstud_{stamp}@student.stxaviers.edu.in",
@@ -149,7 +169,7 @@ def test_guardians_list_returns_linked_students(client):
     db.session.add(StudentParent(student_id=student.id, parent_id=parent.id, is_primary_contact=True))
     db.session.commit()
 
-    res = client.get(f"/api/v1/guardians?search=Guardian{stamp}")
+    res = client.get(f"/api/v1/guardians?search=Guardian{stamp}", headers=_headers())
     assert res.status_code == 200
     data = res.get_json()["data"]
     assert data["total"] >= 1
@@ -161,28 +181,8 @@ def test_guardians_list_returns_linked_students(client):
     assert match["students"][0]["admission_number"] == f"GRD-STU-{stamp}"
 
 
-def test_bulk_import_accepts_explicit_section_id(client):
-    """Task 4: a row may carry an explicit section_id (as the Classes page sends),
-    resolved directly without class/section name matching."""
-    section = _a_section()
-    stamp = int(datetime.now(timezone.utc).timestamp() * 1000)
-    adm = f"IMP-SID-{stamp}"
-    res = client.post("/api/v1/students/bulk-import", json={"students": [{
-        "fullName": "SectionId Import", "admissionNo": adm,
-        "section_id": str(section.id),  # explicit; no className/section provided
-        "gender": "Male", "dob": "2012-01-01",
-    }]})
-    assert res.status_code == 201
-    data = res.get_json()["data"]
-    assert data["imported"] == 1
-    assert "warnings" in data  # warnings key always present
-    student = Student.query.filter_by(admission_number=adm).first()
-    assert student is not None
-    assert any(e.status == "ACTIVE" and str(e.section_id) == str(section.id) for e in student.enrollments)
-
-
 def test_guardians_list_pagination_shape(client):
-    res = client.get("/api/v1/guardians?limit=5&page=1")
+    res = client.get("/api/v1/guardians?limit=5&page=1", headers=_headers())
     assert res.status_code == 200
     data = res.get_json()["data"]
     assert set(["items", "total", "page", "limit", "pages"]).issubset(data.keys())
