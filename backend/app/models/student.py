@@ -1,9 +1,10 @@
 import uuid
-from datetime import date
+from datetime import date, datetime, timezone
 from typing import Optional, List
-from sqlalchemy import String, Text, Boolean, Date, UniqueConstraint, ForeignKey
+from sqlalchemy import String, Text, Boolean, Date, DateTime, Integer, UniqueConstraint, ForeignKey, Index, func
 from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import Mapped, mapped_column, relationship
+from app.extensions import db
 from app.models.base import BaseModel, TenantModel
 
 
@@ -169,5 +170,61 @@ class StudentPromotion(BaseModel):
         UUID(as_uuid=True),
         ForeignKey("users.id", ondelete="SET NULL"),
         nullable=True,
+    )
+
+
+class StudentHistory(db.Model):
+    """Slowly Changing Dimension (Type 2) history for students.
+
+    Every create / edit / soft-delete of a student appends an immutable version
+    row here. The current version has ``valid_to IS NULL`` and ``is_current =
+    True``; an edit closes the prior version (sets ``valid_to`` and clears
+    ``is_current``) and inserts a new current one. The surrogate key ``id`` is
+    separate from the business key (``admission_number`` / ``student_id``).
+
+    History is written by the application service layer (app.services
+    .student_history_service) on every student write path, and is never deleted.
+    """
+    __tablename__ = "student_history"
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    # Business key / link to the live record
+    student_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("students.id", ondelete="CASCADE"), nullable=False, index=True,
+    )
+    admission_number: Mapped[str] = mapped_column(String(50), nullable=False, index=True)
+
+    # Snapshot of the student's attributes at this version
+    first_name: Mapped[Optional[str]] = mapped_column(String(100), nullable=True)
+    last_name: Mapped[Optional[str]] = mapped_column(String(100), nullable=True)
+    email: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
+    gender: Mapped[Optional[str]] = mapped_column(String(20), nullable=True)
+    blood_group: Mapped[Optional[str]] = mapped_column(String(10), nullable=True)
+    status: Mapped[Optional[str]] = mapped_column(String(20), nullable=True)
+    student_is_deleted: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+    # Snapshot of the active enrollment (class/section)
+    section_id: Mapped[Optional[uuid.UUID]] = mapped_column(UUID(as_uuid=True), nullable=True)
+    class_name: Mapped[Optional[str]] = mapped_column(String(100), nullable=True)
+    section_name: Mapped[Optional[str]] = mapped_column(String(50), nullable=True)
+    roll_number: Mapped[Optional[str]] = mapped_column(String(20), nullable=True)
+
+    # SCD2 version metadata
+    version_number: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
+    valid_from: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=lambda: datetime.now(timezone.utc),
+    )
+    valid_to: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
+    is_current: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
+    operation: Mapped[str] = mapped_column(String(20), nullable=False)  # CREATE, UPDATE, DELETE
+    changed_by: Mapped[Optional[uuid.UUID]] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("users.id", ondelete="SET NULL"), nullable=True,
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False,
+        default=lambda: datetime.now(timezone.utc), server_default=func.now(),
+    )
+
+    __table_args__ = (
+        Index("ix_student_history_student_current", "student_id", "is_current"),
     )
 

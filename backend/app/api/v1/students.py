@@ -196,6 +196,68 @@ def get_student(student_id):
     }), 200
 
 
+@students_bp.route("/<uuid:student_id>/history", methods=["GET"])
+def get_student_history(student_id):
+    """Return the SCD2 version timeline for a student (newest version first).
+
+    Soft-deleted/withdrawn students are included here on purpose, so their change
+    log stays viewable after removal. Default lists elsewhere show only the live,
+    is_current record.
+    """
+    from app.models import StudentHistory
+    from sqlalchemy.exc import ProgrammingError, OperationalError
+
+    institution_id = get_current_tenant_id()
+    sq = Student.query.filter(Student.id == student_id)
+    if institution_id:
+        sq = sq.filter(Student.institution_id == institution_id)
+    if not sq.first():
+        raise APIException("Student record not found", status_code=404, error_code="STUDENT_NOT_FOUND")
+
+    try:
+        versions = (
+            StudentHistory.query.filter_by(student_id=student_id)
+            .order_by(StudentHistory.version_number.desc())
+            .all()
+        )
+    except (ProgrammingError, OperationalError):
+        # History table not yet migrated in this environment; degrade gracefully.
+        db.session.rollback()
+        versions = []
+    items = [{
+        "id": str(v.id),
+        "version_number": v.version_number,
+        "operation": v.operation,
+        "is_current": v.is_current,
+        "valid_from": v.valid_from.isoformat() if v.valid_from else None,
+        "valid_to": v.valid_to.isoformat() if v.valid_to else None,
+        "admission_number": v.admission_number,
+        "full_name": f"{v.first_name or ''} {v.last_name or ''}".strip(),
+        "first_name": v.first_name,
+        "last_name": v.last_name,
+        "email": v.email,
+        "gender": v.gender,
+        "blood_group": v.blood_group,
+        "status": v.status,
+        "is_deleted": v.student_is_deleted,
+        "class_name": v.class_name,
+        "section_name": v.section_name,
+        "section_id": str(v.section_id) if v.section_id else None,
+        "roll_number": v.roll_number,
+        "changed_by": str(v.changed_by) if v.changed_by else None,
+        "created_at": v.created_at.isoformat() if v.created_at else None,
+    } for v in versions]
+
+    return jsonify({
+        "success": True,
+        "data": {
+            "student_id": str(student_id),
+            "total": len(items),
+            "versions": items,
+        }
+    }), 200
+
+
 _LOOKUP_CACHE = {"key": None, "at": 0.0, "value": None}
 _LOOKUP_TTL = 60.0  # seconds
 
@@ -388,7 +450,7 @@ def bulk_import_students():
     now = datetime.now(timezone.utc)
     base = {"is_deleted": False, "created_at": now, "updated_at": now}
     user_rows, role_rows, student_rows, enroll_rows = [], [], [], []
-    created, credentials = [], []
+    created, credentials, history_inputs = [], [], []
 
     for p, plain_pw, pw_hash in zip(prepared, passwords, hashes):
         user_id = uuid.uuid4()
@@ -443,6 +505,21 @@ def bulk_import_students():
             "status": "ACTIVE",
         })
 
+        history_inputs.append({
+            "student_id": student_id,
+            "admission_number": p["admission_no"],
+            "first_name": p["first_name"],
+            "last_name": p["last_name"],
+            "email": p["email"],
+            "gender": str(p["gender"]).upper(),
+            "blood_group": p["blood_group"],
+            "status": "ACTIVE",
+            "section_id": p["section_id"],
+            "class_name": p["class_name"],
+            "section_name": p["section"],
+            "roll_number": str(p["roll_no"]) if p["roll_no"] else None,
+        })
+
         created.append({
             "id": str(student_id),
             "admissionNo": p["admission_no"],
@@ -491,6 +568,11 @@ def bulk_import_students():
             status_code=400,
             error_code="IMPORT_DB_ERROR",
         )
+
+    # SCD2: seed an initial CREATE version per imported student, in a separate
+    # non-fatal transaction so a pending migration can't fail the committed import.
+    from app.services.student_history_service import record_versions_bulk_and_commit
+    record_versions_bulk_and_commit(history_inputs)
 
     return jsonify({
         "success": True,
@@ -656,6 +738,11 @@ def create_student():
 
     db.session.commit()
 
+    # SCD2: record the initial version of the student (expire_on_commit means the
+    # student now reflects its persisted state, including the enrollment).
+    from app.services.student_history_service import record_and_commit
+    record_and_commit(student, "CREATE")
+
     resp = {
         "success": True,
         "data": _serialize_student(student),
@@ -711,6 +798,10 @@ def update_student(student_id):
 
     db.session.commit()
 
+    # SCD2: an edit closes the prior version and opens a new current one.
+    from app.services.student_history_service import record_and_commit
+    record_and_commit(student, "UPDATE")
+
     return jsonify({
         "success": True,
         "data": _serialize_student(student),
@@ -757,6 +848,10 @@ def delete_student(student_id):
     except Exception:
         db.session.rollback()
         raise
+
+    # SCD2: record a final DELETE version capturing the withdrawn/soft-deleted state.
+    from app.services.student_history_service import record_and_commit
+    record_and_commit(student, "DELETE")
 
     return jsonify({
         "success": True,

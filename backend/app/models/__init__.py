@@ -4,7 +4,7 @@ from app.models.user import User, Role, Permission, UserRole, RolePermission, To
 from app.models.academic import (
     AcademicYear, Term, Room, ClassLevel, Section, Subject, ClassSubject, TeacherAssignment
 )
-from app.models.student import Student, Parent, StudentParent, StudentEnrollment, StudentPromotion
+from app.models.student import Student, Parent, StudentParent, StudentEnrollment, StudentPromotion, StudentHistory
 from app.models.staff import (
     Department, StaffProfile, TeacherProfile, Qualification, LibraryStaffAssignment
 )
@@ -62,6 +62,7 @@ __all__ = [
     "StudentParent",
     "StudentEnrollment",
     "StudentPromotion",
+    "StudentHistory",
     "Department",
     "StaffProfile",
     "TeacherProfile",
