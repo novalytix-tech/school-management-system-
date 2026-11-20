@@ -926,6 +926,9 @@ select.form-control-sm {
   flex-direction: column;
   overflow: hidden;
   max-height: 90vh;
+  /* Never exceed the viewport: the fixed widths below (720-1050px) would
+     otherwise overflow horizontally on phones/tablets, cutting off content. */
+  max-width: 95vw;
 }
 
 .qp-create-modal {

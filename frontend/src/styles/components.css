@@ -1003,6 +1003,8 @@
   align-items: center;
   justify-content: flex-end;
   gap: var(--space-3);
+  /* Let multiple action buttons wrap instead of overflowing on narrow screens. */
+  flex-wrap: wrap;
 }
 
 @keyframes fadeIn {
