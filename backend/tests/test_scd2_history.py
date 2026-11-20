@@ -1,3 +1,4 @@
+from tests._auth import admin_headers
 """
 Task 3 tests: SCD Type 2 history for students.
 Editing creates a new current version while the prior one stays queryable with
@@ -17,7 +18,7 @@ def _tenant():
 
 
 def _headers():
-    return {"X-Institution-Id": str(_tenant().id)}
+    return admin_headers()
 
 
 def _a_section():

@@ -1,5 +1,5 @@
 import React from 'react';
-import { render, screen, fireEvent } from '@testing-library/react';
+import { render, screen, fireEvent, act } from '@testing-library/react';
 import { describe, it, expect, vi } from 'vitest';
 import { ConfirmDialog } from './ConfirmDialog';
 
@@ -39,6 +39,28 @@ describe('ConfirmDialog Component', () => {
 
     expect(onConfirm).toHaveBeenCalled();
     expect(onClose).toHaveBeenCalled();
+  });
+
+  it('disables the confirm button while an async onConfirm is pending (no double-submit)', async () => {
+    let resolve!: () => void;
+    const onConfirm = vi.fn(() => new Promise<void>(r => { resolve = r; }));
+    const onClose = vi.fn();
+
+    render(
+      <ConfirmDialog isOpen={true} onClose={onClose} onConfirm={onConfirm} title="Delete" message="Sure?" confirmLabel="Delete" />
+    );
+
+    const btn = screen.getByRole('button', { name: 'Delete' });
+    fireEvent.click(btn);
+    fireEvent.click(btn);
+    expect(onConfirm).toHaveBeenCalledTimes(1);
+    expect(screen.getByRole('button', { name: 'Working…' })).toBeDisabled();
+    expect(onClose).not.toHaveBeenCalled();
+
+    await act(async () => {
+      resolve();
+    });
+    expect(onClose).toHaveBeenCalledTimes(1);
   });
 
   it('applies btn-danger styling when isDestructive is true', () => {

@@ -12,6 +12,7 @@ import uuid
 from datetime import date, datetime, timezone
 
 from app.extensions import db
+from tests._auth import admin_headers
 from app.models import (
     Institution, User, Student, StudentParent, Parent,
     Section, ClassLevel, StudentEnrollment, Role, UserRole,
@@ -25,7 +26,7 @@ def _tenant():
 
 
 def _headers():
-    return {"X-Institution-Id": str(_tenant().id)}
+    return admin_headers()
 
 
 def _a_section():

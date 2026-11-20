@@ -85,7 +85,7 @@ def test_parent_child_access_boundary(app, client, auth_headers):
 
     with app.app_context():
         # Get Aarav Patel's student record (Vikram's child)
-        aarav = Student.query.filter_by(admission_number="ADM-2026-0101").first()
+        aarav = Student.query.filter_by(admission_number="ADM-2026-0601").first()
         assert aarav is not None
         aarav_id = str(aarav.id)
 

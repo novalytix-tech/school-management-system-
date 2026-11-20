@@ -17,6 +17,7 @@ import { ERPStorage } from './storage';
 import { DemoPaymentService } from './paymentService';
 import { httpClient } from './api/httpClient';
 import { notifySyncError } from './notifyBus';
+import { isServerId } from '../utils/ids';
 
 export interface ParentFeeSummary {
   studentId: string;
@@ -434,11 +435,23 @@ export const feeService = {
       transactionRef?: string;
       remarks?: string;
     }
-  ): { success: boolean; invoice?: FeeInvoice; payment?: FeePayment; error?: string } => {
+  ): {
+    success: boolean;
+    invoice?: FeeInvoice;
+    payment?: FeePayment;
+    error?: string;
+    /** Settles once the server confirmed (or rejected and rolled back) the payment. */
+    synced?: Promise<{ success: boolean; error?: string }>;
+  } => {
     const store = ERPStorage.get();
     const invoice = (store.feeInvoices || []).find(inv => inv.id === invoiceId);
     if (!invoice) {
       return { success: false, error: 'Fee invoice record not found.' };
+    }
+
+    const isServerInvoice = isServerId(invoice.id);
+    if (isServerInvoice && !httpClient.getToken()) {
+      return { success: false, error: 'Your session has expired. Please sign in again to record this payment.' };
     }
 
     const remainingBalance = invoice.totalAmount - invoice.paidAmount;
@@ -479,6 +492,7 @@ export const feeService = {
       channel: 'manual_office',
     };
 
+    const prevStatus = invoice.status;
     invoice.payments.push(newPayment);
     invoice.paidAmount += paymentData.amount;
     invoice.status = invoice.paidAmount >= invoice.totalAmount ? 'paid' : 'partial';
@@ -514,23 +528,44 @@ export const feeService = {
 
     ERPStorage.set(store);
 
-    // Persist payment to PostgreSQL 18 backend; surface a sync failure instead of hiding it.
-    httpClient.post(`/finance/invoices/${invoice.id}/pay`, {
-      amount: paymentData.amount,
-      payment_method: paymentData.method,
-      transaction_reference: transactionRef,
-    }).then(res => {
-      if (!res?.success) {
-        notifySyncError(
-          'Payment recorded locally only',
-          res?.error?.message || 'The payment was recorded locally but could not be synced to the database.'
-        );
-      }
-    }).catch(() => {
-      notifySyncError('Payment recorded locally only', 'Could not reach the server to sync the payment.');
-    });
+    // Demo / locally-generated invoices (inv-..., non-UUID ids) stay local-only:
+    // the server has no such record to pay against.
+    if (!isServerInvoice) {
+      return { success: true, invoice, payment: newPayment, synced: Promise.resolve({ success: true }) };
+    }
 
-    return { success: true, invoice, payment: newPayment };
+    // Server invoice: persist the payment, and roll the optimistic local update
+    // back if the server does not confirm it so the ledger never shows an
+    // invoice as paid when the database does not.
+    const rollback = (error: string): { success: boolean; error: string } => {
+      const current = ERPStorage.get();
+      const inv = (current.feeInvoices || []).find(i => i.id === invoiceId);
+      if (inv && inv.payments.some(p => p.id === newPayment.id)) {
+        inv.payments = inv.payments.filter(p => p.id !== newPayment.id);
+        inv.paidAmount -= paymentData.amount;
+        inv.status = prevStatus;
+      }
+      if (current.paymentTransactions) {
+        current.paymentTransactions = current.paymentTransactions.filter(t => t.id !== transactionRecord.id);
+      }
+      ERPStorage.set(current);
+      notifySyncError('Payment not recorded', error);
+      return { success: false, error };
+    };
+    const synced = httpClient
+      .post(`/finance/invoices/${invoice.id}/pay`, {
+        amount: paymentData.amount,
+        payment_method: paymentData.method,
+        transaction_reference: transactionRef,
+      })
+      .then(res =>
+        res?.success
+          ? { success: true }
+          : rollback(res?.error?.message || 'The server did not accept the payment, so it was not recorded.')
+      )
+      .catch(() => rollback('Could not reach the server, so the payment was not recorded.'));
+
+    return { success: true, invoice, payment: newPayment, synced };
   },
 
   // -------------------------------------------------------------

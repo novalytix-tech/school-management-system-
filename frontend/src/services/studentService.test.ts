@@ -123,3 +123,168 @@ describe('studentService Student Lifecycle Management', () => {
     expect(studentService.getById(dbId)).toBeUndefined();
   });
 });
+
+const newStudentInput = (admissionNo: string) => ({
+  admissionNo,
+  firstName: 'Ira',
+  lastName: 'Menon',
+  fullName: 'Ira Menon',
+  gender: 'Female' as const,
+  dob: '2012-02-02',
+  classId: 'cls-10a',
+  className: 'Class 10',
+  section: 'A',
+  rollNo: '',
+  academicYear: '2026-2027',
+  admissionDate: '2026-04-01',
+  parentName: 'Ravi Menon',
+  parentPhone: '+91 90000 11111',
+  parentEmail: 'ravi@test.com',
+  address: 'Kochi',
+  status: 'active' as const,
+});
+
+describe('studentService with a backend session', () => {
+  const SERVER_ID = '22222222-2222-4222-8222-222222222222';
+
+  beforeEach(() => {
+    localStorage.clear();
+    ERPStorage.reset();
+    httpClient.setToken('session-token');
+  });
+
+  afterEach(() => {
+    httpClient.setToken(null);
+    vi.restoreAllMocks();
+  });
+
+  it('replaces the local stud-… id with the server id after a successful create', async () => {
+    const postSpy = vi.spyOn(httpClient, 'post').mockResolvedValue({ success: true, data: { id: SERVER_ID } });
+    const res = studentService.create(newStudentInput('ADM-SYNC-1'));
+    const localId = res.data!.id;
+    expect(localId).toMatch(/^stud-/);
+
+    // Something else in the store references the local id (e.g. an admission).
+    const store = ERPStorage.get();
+    (store.admissions as any[]).push({ id: 'adm-x', enrolledStudentId: localId });
+    ERPStorage.set(store);
+
+    const synced = await res.synced!;
+    expect(synced).toEqual({ success: true, id: SERVER_ID });
+    expect(postSpy.mock.calls[0][0]).toBe('/students');
+    expect((postSpy.mock.calls[0][1] as any).id).toBeUndefined();
+    expect((postSpy.mock.calls[0][1] as any).status).toBe('ACTIVE');
+
+    expect(studentService.getById(localId)).toBeUndefined();
+    expect(studentService.getById(SERVER_ID)?.admissionNo).toBe('ADM-SYNC-1');
+    expect((ERPStorage.get().admissions as any[]).find(a => a.id === 'adm-x').enrolledStudentId).toBe(SERVER_ID);
+
+    // Later updates/deletes now target the real server record.
+    const putSpy = vi.spyOn(httpClient, 'put').mockResolvedValue({ success: true, data: null as any });
+    studentService.update(SERVER_ID, { parentPhone: '+91 90000 22222' });
+    expect(putSpy).toHaveBeenCalledWith(`/students/${SERVER_ID}`, { parentPhone: '+91 90000 22222' });
+  });
+
+  it('rolls back the local insert and surfaces the error when the create fails', async () => {
+    vi.spyOn(httpClient, 'post').mockResolvedValue({
+      success: false,
+      data: null as any,
+      error: { code: 'SECTION_REQUIRED', message: 'A valid section is required' },
+    });
+    const toast = vi.fn();
+    window.addEventListener('nts_erp_sync_error', toast);
+    const res = studentService.create(newStudentInput('ADM-SYNC-FAIL'));
+    const synced = await res.synced!;
+    window.removeEventListener('nts_erp_sync_error', toast);
+
+    expect(synced.success).toBe(false);
+    expect(synced.error).toBe('A valid section is required');
+    expect(studentService.getById(res.data!.id)).toBeUndefined();
+    expect(studentService.getByAdmissionNo('ADM-SYNC-FAIL')).toBeUndefined();
+    expect(toast).toHaveBeenCalled();
+  });
+
+  it('toggleStatus PUTs the backend status for server ids and reverts on failure', async () => {
+    const store = ERPStorage.get();
+    store.students = [{ ...store.students[0], id: SERVER_ID, admissionNo: 'DB-T-1', status: 'active' }, ...store.students];
+    ERPStorage.set(store);
+
+    let resolvePut!: (v: any) => void;
+    const putSpy = vi.spyOn(httpClient, 'put').mockImplementation(() => new Promise(r => { resolvePut = r; }));
+    const toggled = studentService.toggleStatus(SERVER_ID);
+    expect(toggled?.status).toBe('inactive');
+    expect(putSpy).toHaveBeenCalledWith(`/students/${SERVER_ID}`, { status: 'WITHDRAWN' });
+
+    resolvePut({ success: false, data: null, error: { code: 'HTTP_500', message: 'boom' } });
+    await new Promise(r => setTimeout(r, 0));
+    expect(studentService.getById(SERVER_ID)?.status).toBe('active');
+  });
+
+  it('does not PUT local/demo ids', () => {
+    const putSpy = vi.spyOn(httpClient, 'put');
+    studentService.toggleStatus(studentService.getAll()[0].id);
+    studentService.update(studentService.getAll()[0].id, { address: 'x' });
+    expect(putSpy).not.toHaveBeenCalled();
+  });
+});
+
+describe('studentService realtime changes', () => {
+  const ID = '33333333-3333-4333-8333-333333333333';
+  const INST = '44444444-4444-4444-8444-444444444444';
+
+  beforeEach(() => {
+    localStorage.clear();
+    ERPStorage.reset();
+    const store = ERPStorage.get();
+    store.students = [
+      { ...store.students[0], id: ID, admissionNo: 'RT-1', fullName: 'Old Name', institutionId: INST },
+      { ...store.students[1], id: 'stud-other-school', admissionNo: 'RT-2', institutionId: 'inst-other' },
+      ...store.students.slice(2),
+    ];
+    ERPStorage.set(store);
+  });
+
+  afterEach(() => vi.restoreAllMocks());
+
+  it('applies "updated" events to the existing student by server id', async () => {
+    vi.spyOn(httpClient, 'get').mockResolvedValue({
+      success: true,
+      data: { students: [{ id: ID, admissionNo: 'RT-1', fullName: 'New Name', className: 'Class 10', institutionId: INST }] },
+    });
+    await studentService.applyRealtimeChange({ action: 'updated', data: { id: ID, admission_number: 'RT-1' } }, INST);
+    expect(studentService.getById(ID)?.fullName).toBe('New Name');
+  });
+
+  it('"deleted" removes by id and never touches another institution with the same admission number', async () => {
+    await studentService.applyRealtimeChange(
+      { action: 'deleted', data: { id: '99999999-9999-4999-8999-999999999999', admission_number: 'RT-2' } },
+      INST
+    );
+    expect(studentService.getById('stud-other-school')).toBeDefined();
+
+    await studentService.applyRealtimeChange({ action: 'deleted', data: { id: ID, admission_number: 'RT-1' } }, INST);
+    expect(studentService.getById(ID)).toBeUndefined();
+  });
+});
+
+describe('ERPStorage backend sync', () => {
+  beforeEach(() => {
+    localStorage.clear();
+    ERPStorage.reset();
+    httpClient.setToken(null);
+  });
+
+  afterEach(() => vi.restoreAllMocks());
+
+  it('set() no longer pushes the whole student list to /sync/store', () => {
+    const postSpy = vi.spyOn(httpClient, 'post');
+    ERPStorage.set(ERPStorage.get());
+    expect(postSpy).not.toHaveBeenCalled();
+  });
+
+  it('syncFromBackend() is skipped without a token', async () => {
+    const getSpy = vi.spyOn(httpClient, 'get');
+    await expect(ERPStorage.syncFromBackend()).resolves.toBe(false);
+    expect(getSpy).not.toHaveBeenCalled();
+  });
+});

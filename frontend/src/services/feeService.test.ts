@@ -1,6 +1,7 @@
-import { describe, it, expect, beforeEach } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { feeService } from './feeService';
 import { ERPStorage } from './storage';
+import { httpClient } from './api/httpClient';
 
 describe('feeService Financial Calculations & Workflows', () => {
   beforeEach(() => {
@@ -73,5 +74,55 @@ describe('feeService Financial Calculations & Workflows', () => {
 
     expect(result.success).toBe(false);
     expect(result.error).toContain('cannot exceed remaining balance');
+  });
+});
+
+describe('feeService.recordPayment server sync', () => {
+  const SERVER_INV = '55555555-5555-4555-8555-555555555555';
+
+  beforeEach(() => {
+    localStorage.clear();
+    ERPStorage.reset();
+  });
+
+  afterEach(() => {
+    httpClient.setToken(null);
+    vi.restoreAllMocks();
+  });
+
+  it('keeps demo/local invoices local-only (no server call)', async () => {
+    const postSpy = vi.spyOn(httpClient, 'post');
+    const target = feeService.getAllInvoices().find(i => i.totalAmount - i.paidAmount >= 100)!;
+    const res = feeService.recordPayment(target.id, { amount: 100, method: 'Cash', recordedBy: 'Office' });
+    expect(res.success).toBe(true);
+    await res.synced;
+    expect(postSpy).not.toHaveBeenCalled();
+  });
+
+  it('rolls back a server invoice payment when the server rejects it', async () => {
+    httpClient.setToken('session-token');
+    const store = ERPStorage.get();
+    const base = store.feeInvoices.find(i => i.totalAmount - i.paidAmount >= 100)!;
+    store.feeInvoices.push({ ...base, id: SERVER_INV, payments: [...base.payments] });
+    ERPStorage.set(store);
+    const before = feeService.getInvoiceById(SERVER_INV)!;
+    const paidBefore = before.paidAmount;
+    const statusBefore = before.status;
+    const txBefore = (ERPStorage.get().paymentTransactions || []).length;
+
+    const postSpy = vi.spyOn(httpClient, 'post').mockResolvedValue({
+      success: false,
+      data: null as any,
+      error: { code: 'HTTP_500', message: 'Ledger locked' },
+    });
+    const res = feeService.recordPayment(SERVER_INV, { amount: 100, method: 'Cash', recordedBy: 'Office' });
+    expect(postSpy).toHaveBeenCalledWith(`/finance/invoices/${SERVER_INV}/pay`, expect.objectContaining({ amount: 100 }));
+    const synced = await res.synced!;
+
+    expect(synced).toEqual({ success: false, error: 'Ledger locked' });
+    const after = feeService.getInvoiceById(SERVER_INV)!;
+    expect(after.paidAmount).toBe(paidBefore);
+    expect(after.status).toBe(statusBefore);
+    expect((ERPStorage.get().paymentTransactions || []).length).toBe(txBefore);
   });
 });

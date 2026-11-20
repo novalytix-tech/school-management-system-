@@ -20,6 +20,7 @@ from datetime import date, datetime, timezone
 import pytest
 
 from app.extensions import db
+from tests._auth import admin_headers
 from app.models import (
     User, Student, Role, UserRole, Institution,
     AcademicYear, Section, StudentEnrollment,
@@ -35,7 +36,7 @@ LOGIN_PASSWORD = "GhostTest#2026!"
 def _make_login_student(with_enrollment: bool = True):
     """Create a fully active, verified student with a login account in the
     primary institution. Returns (student, user, enrollment_or_None)."""
-    institution = Institution.query.filter_by(status="ACTIVE").first()
+    institution = Institution.query.filter_by(code="STXAV-DELHI").first()
     assert institution is not None, "seed must provide an active institution"
 
     stamp = f"{int(datetime.now(timezone.utc).timestamp() * 1000)}-{uuid.uuid4().hex[:6]}"
@@ -105,7 +106,7 @@ def test_deleted_student_cannot_login(client):
     assert tokens["access_token"], "a live student should be able to log in before deletion"
 
     # Act: delete via the real HTTP endpoint.
-    res = client.delete(f"/api/v1/students/{student_id}")
+    res = client.delete(f"/api/v1/students/{student_id}", headers=admin_headers())
     assert res.status_code == 200
     assert res.get_json()["success"] is True
 
@@ -132,20 +133,20 @@ def test_deleted_student_disappears_from_list_and_sync(client):
     admission_no = student.admission_number
 
     # Present before deletion.
-    list_before = client.get("/api/v1/students?limit=100").get_json()["data"]["items"]
+    list_before = client.get("/api/v1/students?limit=100", headers=admin_headers()).get_json()["data"]["items"]
     assert any(s["id"] == student_id for s in list_before)
 
-    assert client.delete(f"/api/v1/students/{student_id}").status_code == 200
+    assert client.delete(f"/api/v1/students/{student_id}", headers=admin_headers()).status_code == 200
 
     # Absent from the list afterwards.
-    list_after = client.get("/api/v1/students?limit=100").get_json()["data"]["items"]
+    list_after = client.get("/api/v1/students?limit=100", headers=admin_headers()).get_json()["data"]["items"]
     assert all(s["id"] != student_id for s in list_after)
 
     # get_student resolves to 404.
-    assert client.get(f"/api/v1/students/{student_id}").status_code == 404
+    assert client.get(f"/api/v1/students/{student_id}", headers=admin_headers()).status_code == 404
 
     # Absent from the sync/store hydration feed (so a refresh can't resurrect it).
-    store = client.get("/api/v1/sync/store").get_json()["data"]
+    store = client.get("/api/v1/sync/store", headers=admin_headers()).get_json()["data"]
     assert all(s.get("admissionNo") != admission_no for s in store["students"])
 
 

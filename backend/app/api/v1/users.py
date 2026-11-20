@@ -1,16 +1,28 @@
-import uuid
+import re
 import secrets
+import uuid
 from datetime import datetime, timezone
 from flask import Blueprint, request, jsonify
 from flask_jwt_extended import jwt_required, get_jwt
+from sqlalchemy import func
 from app.extensions import db
 from app.models import User, Role, UserRole
 from app.utils.errors import APIException
 from app.utils.tenant import get_current_tenant_id
 from app.utils.security import hash_password
+from app.services.auth_service import (
+    AuthService, clean_text_field, clean_email, clean_phone,
+)
 from app.services.dev_auth_service import is_dev_auth_active, DevAuthService
 
 users_bp = Blueprint("users", __name__, url_prefix="/users")
+
+# Roles an account may be created with. Only a super_admin may grant the
+# administrative roles; a school_admin creates school-level personas only.
+ASSIGNABLE_ROLES = {"student", "teacher", "parent", "supplier", "school_admin", "super_admin"}
+PRIVILEGED_ROLES = {"school_admin", "super_admin"}
+
+_LOGIN_ID_RE = re.compile(r"^[A-Za-z0-9._@\-]+$")
 
 
 def _generate_temporary_password() -> str:
@@ -24,14 +36,39 @@ def _generate_temporary_password() -> str:
     return f"{p1}#{p2}{p3}"
 
 
+def _require_admin():
+    """Return (claims, is_super_admin) for an administrator caller, else 403."""
+    claims = get_jwt()
+    roles = claims.get("roles") or []
+    if "school_admin" not in roles and "super_admin" not in roles:
+        raise APIException(message="Administrator access required.", status_code=403, error_code="FORBIDDEN")
+    return claims, "super_admin" in roles
+
+
+def _load_managed_user(user_id: uuid.UUID, claims, is_super: bool) -> User:
+    """Load a target account the caller is allowed to manage.
+
+    Non-super-admins may only act on accounts of their own institution (other
+    tenants' accounts are reported as not found) and never on super_admin accounts.
+    """
+    u = db.session.get(User, user_id)
+    if not u or u.is_deleted:
+        raise APIException(message="User not found.", status_code=404, error_code="NOT_FOUND")
+    if not is_super:
+        caller_inst = claims.get("institution_id")
+        if not caller_inst or u.institution_id is None or str(u.institution_id) != str(caller_inst):
+            raise APIException(message="User not found.", status_code=404, error_code="NOT_FOUND")
+        if "super_admin" in u.role_names:
+            raise APIException(message="You cannot manage a platform administrator account.",
+                               status_code=403, error_code="FORBIDDEN")
+    return u
+
+
 @users_bp.route("", methods=["GET"])
 @jwt_required()
 def list_user_accounts():
     """List user accounts with roles, credentials status, and login audit tracking."""
-    claims = get_jwt()
-    roles = claims.get("roles", [])
-    if "school_admin" not in roles and "super_admin" not in roles:
-        raise APIException(message="Administrator access required.", status_code=403, error_code="FORBIDDEN")
+    claims, is_super = _require_admin()
 
     role_filter = request.args.get("role")
     status_filter = request.args.get("status")
@@ -73,10 +110,20 @@ def list_user_accounts():
         return jsonify({"success": True, "data": accounts}), 200
 
     # PostgreSQL Database Mode
-    institution_id = get_current_tenant_id()
     query = User.query
-    if institution_id:
-        query = query.filter((User.institution_id == institution_id) | (User.institution_id.is_(None)))
+    if is_super:
+        # A super_admin sees every institution unless one is selected via the
+        # X-Institution-Id header / institution_id query arg (resolved by tenant.py).
+        institution_id = get_current_tenant_id()
+        if institution_id:
+            query = query.filter(User.institution_id == institution_id)
+    else:
+        # School admins only ever see their own institution's accounts; platform
+        # accounts (institution_id IS NULL) are never listed to them.
+        institution_id = claims.get("institution_id")
+        if not institution_id:
+            return jsonify({"success": True, "data": []}), 200
+        query = query.filter(User.institution_id == uuid.UUID(str(institution_id)))
 
     if search_query:
         query = query.filter(
@@ -91,6 +138,8 @@ def list_user_accounts():
     result = []
     for u in users:
         u_roles = u.role_names
+        if not is_super and "super_admin" in u_roles:
+            continue
         primary_role = u_roles[0] if u_roles else "student"
         if role_filter and role_filter not in u_roles:
             continue
@@ -119,26 +168,46 @@ def list_user_accounts():
     return jsonify({"success": True, "data": result}), 200
 
 
+def _first_present(data: dict, *keys):
+    for key in keys:
+        value = data.get(key)
+        if value is not None and value != "":
+            return value
+    return None
+
+
 @users_bp.route("", methods=["POST"])
 @jwt_required()
 def create_user_account():
     """Create a user account with auto-generated Login ID and temporary password."""
-    claims = get_jwt()
-    if "school_admin" not in claims.get("roles", []) and "super_admin" not in claims.get("roles", []):
-        raise APIException(message="Administrator access required.", status_code=403, error_code="FORBIDDEN")
+    claims, is_super = _require_admin()
 
     data = request.get_json(silent=True) or {}
-    first_name = (data.get("first_name") or data.get("firstName") or "").strip()
-    last_name = (data.get("last_name") or data.get("lastName") or "").strip()
-    email = (data.get("email") or "").strip().lower()
-    phone = (data.get("phone") or "").strip()
-    role_name = (data.get("role") or "student").strip().lower()
+    if not isinstance(data, dict):
+        raise APIException(message="Request body must be a JSON object.", status_code=400)
 
+    first_name = clean_text_field(_first_present(data, "first_name", "firstName"), "first_name", 100)
+    last_name = clean_text_field(_first_present(data, "last_name", "lastName"), "last_name", 100)
     if not first_name or not last_name:
         raise APIException(message="First Name and Last Name are required.", status_code=400)
+    email = clean_email(data.get("email"))
+    phone = clean_phone(data.get("phone"))
+
+    raw_role = data.get("role") or "student"
+    if not isinstance(raw_role, str):
+        raise APIException(message="role must be a string.", status_code=400, error_code="VALIDATION_ERROR")
+    role_name = raw_role.strip().lower()
+    if role_name not in ASSIGNABLE_ROLES:
+        raise APIException(message=f"Unknown role '{role_name}'.", status_code=400, error_code="INVALID_ROLE")
+    if role_name in PRIVILEGED_ROLES and not is_super:
+        raise APIException(message="Only a platform administrator can create administrator accounts.",
+                           status_code=403, error_code="FORBIDDEN")
 
     # Auto-generate unique Login ID if not supplied
-    supplied_login_id = (data.get("login_id") or data.get("username") or "").strip()
+    supplied_login_id = clean_text_field(_first_present(data, "login_id", "username"), "login_id", 100)
+    if supplied_login_id and not _LOGIN_ID_RE.match(supplied_login_id):
+        raise APIException(message="Login ID may only contain letters, digits, '.', '_', '@' and '-'.",
+                           status_code=400, error_code="VALIDATION_ERROR")
     if not supplied_login_id:
         prefix_map = {
             "student": "STU",
@@ -155,10 +224,17 @@ def create_user_account():
 
     # Auto-generate temporary password
     temp_password = data.get("temporary_password") or _generate_temporary_password()
+    if not isinstance(temp_password, str) or len(temp_password) > 128:
+        raise APIException(message="temporary_password must be a string of at most 128 characters.",
+                           status_code=400, error_code="VALIDATION_ERROR")
+
+    resolved_email = email or f"{generated_login_id.lower()}@stxaviers.edu.in"
+    if len(resolved_email) > 255:
+        raise APIException(message="Login ID is too long to derive an email address.",
+                           status_code=400, error_code="VALIDATION_ERROR")
 
     # Fallback/Dev Mode — persist to the dev auth store so the new user can log in.
     if is_dev_auth_active():
-        resolved_email = email or f"{generated_login_id.lower()}@stxaviers.edu.in"
         resolved_phone = phone or "+91 98222 33445"
         persisted = DevAuthService.create_account(
             first_name=first_name,
@@ -194,20 +270,39 @@ def create_user_account():
         }), 201
 
     # Database Mode
-    institution_id = get_current_tenant_id()
-    # Check duplicate email or username
+    if role_name == "super_admin":
+        institution_id = None  # platform accounts are not tied to a school
+    else:
+        institution_id = get_current_tenant_id(required=True)
+        if institution_id is None:
+            raise APIException(message="Select an institution for this account.",
+                               status_code=400, error_code="TENANT_REQUIRED")
+
+    role = Role.query.filter_by(name=role_name).first()
+    if not role:
+        raise APIException(message=f"Unknown role '{role_name}'.", status_code=400, error_code="INVALID_ROLE")
+
+    # Login ID and email are both login identifiers and unique case-insensitively.
+    login_lower = generated_login_id.lower()
     existing_user = User.query.filter(
-        (User.username == generated_login_id) |
-        (User.email == email if email else False)
+        (func.lower(User.username) == login_lower) |
+        (func.lower(User.email) == resolved_email) |
+        (func.lower(User.username) == resolved_email) |
+        (func.lower(User.email) == login_lower)
     ).first()
     if existing_user:
-        raise APIException(message=f"A user with Login ID '{generated_login_id}' or email '{email}' already exists.", status_code=400)
+        raise APIException(
+            message=f"A user with Login ID '{generated_login_id}' or email '{resolved_email}' already exists.",
+            status_code=409, error_code="DUPLICATE_USER",
+        )
+    # Phones are deliberately not unique: student logins carry the parent's
+    # number, so the parent's own account (and siblings) must be able to share it.
 
     new_user = User(
         institution_id=institution_id,
         username=generated_login_id,
-        email=email or f"{generated_login_id.lower()}@stxaviers.edu.in",
-        phone=phone or "+91 98222 33445",
+        email=resolved_email,
+        phone=phone,
         first_name=first_name,
         last_name=last_name,
         password_hash=hash_password(temp_password),
@@ -217,11 +312,7 @@ def create_user_account():
     )
     db.session.add(new_user)
     db.session.flush()
-
-    role = Role.query.filter_by(name=role_name).first()
-    if role:
-        db.session.add(UserRole(user_id=new_user.id, role_id=role.id))
-
+    db.session.add(UserRole(user_id=new_user.id, role_id=role.id))
     db.session.commit()
 
     return jsonify({
@@ -248,13 +339,11 @@ def create_user_account():
     }), 201
 
 
-@users_bp.route("/<user_id>/reset-password", methods=["POST"])
+@users_bp.route("/<uuid:user_id>/reset-password", methods=["POST"])
 @jwt_required()
 def admin_reset_password(user_id):
     """Admin resets user password and generates a fresh temporary password."""
-    claims = get_jwt()
-    if "school_admin" not in claims.get("roles", []) and "super_admin" not in claims.get("roles", []):
-        raise APIException(message="Administrator access required.", status_code=403, error_code="FORBIDDEN")
+    claims, is_super = _require_admin()
 
     temp_password = _generate_temporary_password()
 
@@ -269,14 +358,13 @@ def admin_reset_password(user_id):
             }
         }), 200
 
-    uid = uuid.UUID(str(user_id)) if isinstance(user_id, str) else user_id
-    u = User.query.get(uid)
-    if not u:
-        raise APIException(message="User not found.", status_code=404)
+    u = _load_managed_user(user_id, claims, is_super)
 
     u.password_hash = hash_password(temp_password)
     u.must_change_password = True
-    db.session.commit()
+    # Sessions opened with the old password must not survive the reset
+    # (logout_all_sessions commits the password change along with it).
+    AuthService.logout_all_sessions(u.id)
 
     return jsonify({
         "success": True,
@@ -288,13 +376,15 @@ def admin_reset_password(user_id):
     }), 200
 
 
-@users_bp.route("/<user_id>/toggle-status", methods=["POST"])
+@users_bp.route("/<uuid:user_id>/toggle-status", methods=["POST"])
 @jwt_required()
 def toggle_user_status(user_id):
     """Activate or deactivate user account."""
-    claims = get_jwt()
-    if "school_admin" not in claims.get("roles", []) and "super_admin" not in claims.get("roles", []):
-        raise APIException(message="Administrator access required.", status_code=403, error_code="FORBIDDEN")
+    claims, is_super = _require_admin()
+
+    if str(user_id) == str(claims.get("sub")):
+        raise APIException(message="You cannot change the status of your own account.",
+                           status_code=400, error_code="SELF_STATUS_CHANGE")
 
     if is_dev_auth_active():
         return jsonify({
@@ -303,13 +393,15 @@ def toggle_user_status(user_id):
             "data": {"status": "deactivated"}
         }), 200
 
-    uid = uuid.UUID(str(user_id)) if isinstance(user_id, str) else user_id
-    u = User.query.get(uid)
-    if not u:
-        raise APIException(message="User not found.", status_code=404)
+    u = _load_managed_user(user_id, claims, is_super)
 
     u.is_active = not u.is_active
-    db.session.commit()
+    if not u.is_active:
+        # A deactivated account must lose access immediately, not when its
+        # current access/refresh tokens expire (this also commits the toggle).
+        AuthService.logout_all_sessions(u.id)
+    else:
+        db.session.commit()
 
     status_label = "active" if u.is_active else "deactivated"
     return jsonify({
@@ -323,12 +415,20 @@ def toggle_user_status(user_id):
     }), 200
 
 
-@users_bp.route("/<user_id>/resend-credentials", methods=["POST"])
+@users_bp.route("/<uuid:user_id>/resend-credentials", methods=["POST"])
 @jwt_required()
 def resend_credentials(user_id):
     """Resend login credentials via registered SMS and/or Gmail."""
+    claims, is_super = _require_admin()
+
     data = request.get_json(silent=True) or {}
-    channel = data.get("channel", "sms")
+    channel = data.get("channel", "sms") if isinstance(data, dict) else "sms"
+    if channel not in ("sms", "email", "gmail", "both"):
+        raise APIException(message="channel must be one of sms, email, gmail, both.",
+                           status_code=400, error_code="VALIDATION_ERROR")
+
+    if not is_dev_auth_active():
+        _load_managed_user(user_id, claims, is_super)
 
     return jsonify({
         "success": True,
@@ -339,4 +439,3 @@ def resend_credentials(user_id):
             "dispatched_at": datetime.now(timezone.utc).isoformat(),
         }
     }), 200
-

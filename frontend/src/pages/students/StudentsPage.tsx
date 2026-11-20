@@ -31,10 +31,20 @@ import { EntityToolbox, ToolboxColumn } from '../../components/common/EntityTool
 import { ListToolbar } from '../../components/common/ListToolbar';
 import { pickField } from '../../utils/csv';
 import { exportToCSV } from '../../utils/export';
+import { useClampPage } from '../../utils/usePagination';
 import { httpClient } from '../../services/api/httpClient';
 import { ImportProgressModal, ImportProgressState } from '../../components/common/ImportProgressModal';
 import { ImportSummaryModal, ImportSummary, ImportRowError } from '../../components/common/ImportSummaryModal';
 import { Eye, Edit, Trash2, Power, RotateCcw } from 'lucide-react';
+
+/** Normalise a free-text gender cell; returns null when it is missing or unknown. */
+function normalizeGender(raw: string): Student['gender'] | null {
+  const g = (raw || '').trim().toLowerCase();
+  if (['male', 'm', 'boy'].includes(g)) return 'Male';
+  if (['female', 'f', 'girl'].includes(g)) return 'Female';
+  if (['other', 'o'].includes(g)) return 'Other';
+  return null;
+}
 
 /**
  * Faculty & Administrative Student Directory Manager
@@ -61,8 +71,10 @@ const StudentDirectoryManager: React.FC = () => {
     return teacher ? (teacher.assignedClasses || []).map(a => a.classId) : [];
   }, [teacher]);
 
+  // A teacher is scoped to their assigned classes; with no assignments they see
+  // no classes (never the whole school).
   const availableClasses = useMemo(() => {
-    if (currentRole === 'teacher' && teacherAssignedClassIds.length > 0) {
+    if (currentRole === 'teacher') {
       return classes.filter(c => teacherAssignedClassIds.includes(c.id));
     }
     return classes;
@@ -70,7 +82,8 @@ const StudentDirectoryManager: React.FC = () => {
 
   // Scoped student roster: teachers only see students in their assigned classes
   const roleScopedStudents = useMemo(() => {
-    if (currentRole === 'teacher' && teacherAssignedClassIds.length > 0) {
+    if (currentRole === 'teacher') {
+      if (teacherAssignedClassIds.length === 0) return [];
       return students.filter(s => teacherAssignedClassIds.includes(s.classId));
     }
     return students;
@@ -279,7 +292,14 @@ const StudentDirectoryManager: React.FC = () => {
     }
 
     const targetClass = classes.find(c => c.id === formData.classId);
-    const className = formData.className || (targetClass ? targetClass.name : 'Class 10');
+    if (!targetClass) {
+      setFormError(
+        `No class exists for ${formData.className || 'the selected grade'} - Section ${(formData.section || 'A').toUpperCase()}. ` +
+          'Create that class first or choose another grade/section.'
+      );
+      return;
+    }
+    const className = formData.className || targetClass.name;
 
     if (editingStudent) {
       const res = studentService.update(editingStudent.id, {
@@ -323,7 +343,15 @@ const StudentDirectoryManager: React.FC = () => {
             phone: accRes.data.phone,
             email: accRes.data.email,
           });
+        } else {
+          addToast(
+            'error',
+            'Login Account Not Created',
+            `${formData.firstName} ${formData.lastName} was added, but their login account could not be created: ${accRes.error || 'unknown error'}. Create it from User Accounts.`
+          );
         }
+      }).catch(() => {
+        addToast('error', 'Login Account Not Created', 'Could not reach the server to create the student login account.');
       });
     }
 
@@ -417,22 +445,47 @@ const StudentDirectoryManager: React.FC = () => {
       addToast('error', 'Access Denied', 'Only administrators can import students.');
       return;
     }
-    // Build rows for the backend bulk import (only a Name is mandatory).
+    // Build rows for the backend bulk import (Name and Gender are mandatory).
+    // Rows that fail client-side checks are reported with their CSV row number
+    // (header = line 1) instead of being silently defaulted or dropped.
+    const clientErrors: ImportRowError[] = [];
+    const srcIndexOf: number[] = []; // position in `rows` -> index in `records`
     const rows = records
-      .map(r => {
+      .map((r, idx) => {
+        const csvRow = idx + 2;
         const fullName = pickField(r, 'Full Name', 'fullName', 'Name', 'Student Name');
-        if (!fullName) return null;
+        if (!fullName) {
+          clientErrors.push({ row: csvRow, name: '', reason: 'Name is missing' });
+          return null;
+        }
+        const rawGender = pickField(r, 'Gender');
+        const gender = normalizeGender(rawGender);
+        if (!gender) {
+          clientErrors.push({
+            row: csvRow,
+            name: fullName,
+            reason: rawGender ? `Unknown gender "${rawGender}" (use Male, Female or Other)` : 'Gender is missing',
+          });
+          return null;
+        }
         const className = pickField(r, 'Class', 'className', 'Class Name');
-        const cls = classes.find(c => c.name.toLowerCase() === className.toLowerCase());
+        const section = (pickField(r, 'Section', 'section') || 'A').trim();
+        // Match the class on BOTH name and section — "Class 5" alone is ambiguous.
+        const cls = classes.find(
+          c =>
+            c.name.toLowerCase() === className.toLowerCase() &&
+            (c.section || '').trim().toLowerCase() === section.toLowerCase()
+        );
+        srcIndexOf.push(idx);
         return {
           fullName,
           admissionNo: pickField(r, 'Admission No', 'admissionNo', 'Admission Number', 'Adm No'),
-          gender: pickField(r, 'Gender') || 'Male',
+          gender,
           dob: pickField(r, 'DOB', 'Date of Birth'),
           bloodGroup: pickField(r, 'Blood Group'),
           classId: cls?.id || '',
           className: cls?.name || className,
-          section: pickField(r, 'Section', 'section') || 'A',
+          section,
           rollNo: pickField(r, 'Roll No', 'Roll Number'),
           parentName: pickField(r, 'Parent Name', 'Guardian Name'),
           parentPhone: pickField(r, 'Parent Phone', 'Phone', 'Contact', 'Mobile'),
@@ -441,9 +494,21 @@ const StudentDirectoryManager: React.FC = () => {
         };
       })
       .filter((x): x is NonNullable<typeof x> => x !== null);
+    // The server numbers rows by their position in what we send; map that back
+    // to the row number in the user's file.
+    const toCsvRow = (serverRow: number) => {
+      const src = srcIndexOf[serverRow - 2];
+      return src === undefined ? serverRow : src + 2;
+    };
 
     if (rows.length === 0) {
-      addToast('warning', 'Nothing to Import', 'No valid rows found (each student needs a Name).');
+      addToast(
+        'warning',
+        'Nothing to Import',
+        clientErrors.length > 0
+          ? `No valid rows found. ${clientErrors.slice(0, 3).map(e => `Row ${e.row}: ${e.reason}`).join('; ')}`
+          : 'No valid rows found (each student needs a Name and Gender).'
+      );
       return;
     }
 
@@ -455,7 +520,7 @@ const StudentDirectoryManager: React.FC = () => {
 
     const allCreated: Student[] = [];
     const allCreds: ImpCred[] = [];
-    const allErrors: ImportRowError[] = [];
+    const allErrors: ImportRowError[] = [...clientErrors];
     const allWarnings = new Set<string>();
     let imported = 0;
     let skipped = 0;
@@ -477,7 +542,7 @@ const StudentDirectoryManager: React.FC = () => {
         }
         allCreated.push(...(res.data.created || []));
         allCreds.push(...(res.data.credentials || []));
-        allErrors.push(...(res.data.errors || []));
+        allErrors.push(...(res.data.errors || []).map(e => ({ ...e, row: toCsvRow(e.row) })));
         (res.data.warnings || []).forEach(w => allWarnings.add(w));
         imported += res.data.imported || 0;
         skipped += res.data.skipped || 0;
@@ -527,7 +592,7 @@ const StudentDirectoryManager: React.FC = () => {
       setImportProgress(null);
       setImportSummary({
         imported,
-        skipped,
+        skipped: skipped + clientErrors.length,
         credentials: allCreds.length,
         errors: allErrors,
         warnings: Array.from(allWarnings),
@@ -574,6 +639,9 @@ const StudentDirectoryManager: React.FC = () => {
     const start = (currentPage - 1) * pageSize;
     return filteredStudents.slice(start, start + pageSize);
   }, [filteredStudents, currentPage, pageSize]);
+
+  // After deletes shrink the list, stay on the last page that still has rows.
+  useClampPage(currentPage, setCurrentPage, filteredStudents.length, pageSize);
 
   // Student 360 data
   const student360Data = useMemo(() => {
@@ -977,10 +1045,12 @@ const StudentDirectoryManager: React.FC = () => {
                       const clean = (n?: string) => (n || '').replace(/\s*-\s*[A-Za-z]$/, '').trim();
                       // Link the matching class record (section included) when one exists,
                       // tolerating older names like "Class 6 - A".
+                      // No match clears the link (never keeps the previous grade's
+                      // class) so save is blocked with a clear validation error.
                       const match =
                         classes.find(c => clean(c.name) === gradeName && (c.section || '').toUpperCase() === sec) ||
-                        classes.find(c => clean(c.name) === gradeName);
-                      const newClassId = match?.id || formData.classId;
+                        classes.find(c => clean(c.name) === gradeName && !c.section);
+                      const newClassId = match?.id || '';
                       const newRoll = !editingStudent
                         ? studentService.getNextRollNo(newClassId, sec)
                         : formData.rollNo;
@@ -1009,7 +1079,7 @@ const StudentDirectoryManager: React.FC = () => {
                         const match = classes.find(
                           c => clean(c.name) === grade && (c.section || '').toUpperCase() === newSec
                         );
-                        const newClassId = match?.id || formData.classId;
+                        const newClassId = match?.id || '';
                         const newRoll = !editingStudent
                           ? studentService.getNextRollNo(newClassId, newSec)
                           : formData.rollNo;

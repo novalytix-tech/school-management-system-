@@ -8,7 +8,6 @@ import { INITIAL_ERP_DATA } from '../data/seedData';
 import { PERIOD_SLOTS } from '../utils/timetableConstants';
 import { schoolMigrationService } from './schoolMigrationService';
 import { httpClient } from './api/httpClient';
-import { notifySyncError } from './notifyBus';
 
 const STORAGE_KEY = 'nts_novalytix_school_erp_store_v1';
 
@@ -307,39 +306,30 @@ export class ERPStorage {
     }
   }
 
-  public static set(data: ERPDataStore, syncBackend: boolean = true): void {
+  /**
+   * Persists the store locally and notifies listeners.
+   *
+   * `_syncBackend` is kept for signature compatibility only. set() used to POST
+   * the whole student list (demo seed included) to /sync/store on every local
+   * write, polluting the real school's database. Each service now persists its
+   * own mutations through its dedicated endpoint instead.
+   */
+  public static set(data: ERPDataStore, _syncBackend: boolean = true): void {
     try {
       this.cachedData = data;
       localStorage.setItem(STORAGE_KEY, JSON.stringify(data));
       // Dispatch custom event so reactive hooks/listeners can update immediately
       window.dispatchEvent(new CustomEvent('nts_erp_storage_updated', { detail: data }));
 
-      // Asynchronously synchronize mutations with PostgreSQL 18 backend.
-      // A failure here means local changes are not persisted server-side, so it
-      // is surfaced (de-duplicated) rather than silently swallowed.
-      if (syncBackend) {
-        httpClient.post('/sync/store', {
-          students: data.students,
-        }).then(res => {
-          if (!res?.success) {
-            notifySyncError(
-              'Changes not synced to server',
-              'Your changes are saved on this device but could not be synced to the database.'
-            );
-          }
-        }).catch(() => {
-          notifySyncError(
-            'Changes not synced to server',
-            'Your changes are saved on this device but the server could not be reached.'
-          );
-        });
-      }
     } catch (err) {
       console.error('Failed to save ERP store to localStorage:', err);
     }
   }
 
   public static async syncFromBackend(): Promise<boolean> {
+    // Every /api/v1 route requires a JWT: without one the call would 401, kick
+    // off a refresh and fire nts_erp_auth_expired on a plain (demo) page load.
+    if (!httpClient.getToken()) return false;
     try {
       const res = await httpClient.get('/sync/store');
       if (res.success && res.data) {

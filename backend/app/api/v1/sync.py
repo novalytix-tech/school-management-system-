@@ -1,9 +1,13 @@
-from datetime import date, datetime
+import uuid
 from flask import Blueprint, request, jsonify, current_app
+from flask_jwt_extended import get_jwt, get_jwt_identity
 from app.extensions import db
 from app.models import (
-    Institution, User, ClassLevel, Student, StaffProfile, FeeInvoice, Book, TransportRoute, Notice
+    Institution, ClassLevel, Student, StaffProfile, FeeInvoice, Book, TransportRoute, Notice,
+    StudentParent, Parent,
 )
+from app.utils.tenant import get_current_tenant_id
+from app.utils.errors import APIException
 
 sync_bp = Blueprint("sync", __name__, url_prefix="/sync")
 
@@ -196,6 +200,25 @@ def _get_fallback_store():
     }
 
 
+def _visible_student_ids():
+    """Student ids the caller may see, or None when the caller is staff (all)."""
+    claims = get_jwt()
+    roles = set(claims.get("roles", []))
+    if roles & {"super_admin", "school_admin", "teacher"}:
+        return None
+    user_id = uuid.UUID(get_jwt_identity())
+    ids = set()
+    if "student" in roles:
+        ids.update(str(sid) for (sid,) in db.session.query(Student.id).filter(Student.user_id == user_id))
+    if "parent" in roles:
+        ids.update(
+            str(sid) for (sid,) in db.session.query(StudentParent.student_id)
+            .join(Parent, StudentParent.parent_id == Parent.id)
+            .filter(Parent.user_id == user_id)
+        )
+    return ids
+
+
 @sync_bp.route("/store", methods=["GET"])
 def get_store():
     """
@@ -205,8 +228,12 @@ def get_store():
     if not current_app.config.get("DATABASE_ENABLED", False):
         return jsonify({"success": True, "data": _get_fallback_store()}), 200
 
-    institution = Institution.query.first()
-    inst_id = institution.id if institution else None
+    # Every collection below is scoped to the caller's own institution (pinned to
+    # the JWT claim; a super_admin picks one via X-Institution-Id). Previously this
+    # used Institution.query.first() and unfiltered .all() queries, which leaked
+    # other schools' students, staff, invoices and notices.
+    inst_id = get_current_tenant_id(required=True)
+    institution = Institution.query.filter(Institution.id == inst_id).first()
 
     # 1. Institutions
     institutions_data = []
@@ -231,7 +258,7 @@ def get_store():
 
     # 2. Classes
     classes_data = []
-    classes = ClassLevel.query.all()
+    classes = ClassLevel.query.filter(ClassLevel.institution_id == inst_id).all()
     for c in classes:
         for sec in c.sections:
             teacher_name = None
@@ -259,6 +286,7 @@ def get_store():
     # student can never return to the frontend after a store re-hydrate.
     students_data = []
     students = Student.query.filter(
+        Student.institution_id == inst_id,
         Student.is_deleted.is_(False),
         Student.status != "WITHDRAWN",
     ).all()
@@ -335,7 +363,7 @@ def get_store():
 
     # 4. Teachers & Staff
     teachers_data = []
-    staff_profiles = StaffProfile.query.all()
+    staff_profiles = StaffProfile.query.filter(StaffProfile.institution_id == inst_id).all()
     from app.models import TeacherAssignment, Section
     for sp in staff_profiles:
         u = sp.user
@@ -367,14 +395,8 @@ def get_store():
                     "subject": "Mathematics",
                 })
 
-        if not assigned_classes and classes_data:
-            c0 = classes_data[0]
-            assigned_classes.append({
-                "classId": c0["id"],
-                "className": c0["name"].split(" - ")[0],
-                "section": c0["section"],
-                "subject": "Science" if "sunita" in u.first_name.lower() else "Mathematics",
-            })
+        # A teacher with no assignments gets no classes (previously the first
+        # class was silently assigned, exposing its roster to an unassigned teacher).
 
         teacher_ref_id = "teach-1" if "ananya" in u.email.lower() else ("teach-5" if "sunita" in u.email.lower() else ("teach-2" if "rajesh" in u.email.lower() else f"teach-{sp.employee_id}"))
 
@@ -403,7 +425,7 @@ def get_store():
 
     # 5. Invoices
     invoices_data = []
-    invoices = FeeInvoice.query.all()
+    invoices = FeeInvoice.query.filter(FeeInvoice.institution_id == inst_id).all()
     for inv in invoices:
         student_name = "Student"
         if inv.student and inv.student.user:
@@ -426,7 +448,7 @@ def get_store():
 
     # 6. Books
     books_data = []
-    books = Book.query.all()
+    books = Book.query.filter(Book.institution_id == inst_id).all()
     for b in books:
         books_data.append({
             "id": str(b.id),
@@ -444,7 +466,7 @@ def get_store():
 
     # 7. Notices
     notices_data = []
-    notices = Notice.query.all()
+    notices = Notice.query.filter(Notice.institution_id == inst_id).all()
     for n in notices:
         notices_data.append({
             "id": str(n.id),
@@ -460,7 +482,7 @@ def get_store():
 
     # 8. Routes
     routes_data = []
-    routes = TransportRoute.query.all()
+    routes = TransportRoute.query.filter(TransportRoute.institution_id == inst_id).all()
     for r in routes:
         routes_data.append({
             "id": str(r.id),
@@ -483,6 +505,14 @@ def get_store():
             "institutionId": str(r.institution_id),
         })
 
+    # Students, parents and suppliers hydrate from this feed too, but must only
+    # receive their own (or their wards') student records and invoices, never the
+    # whole school's personal data (parent contacts, DOB, fee balances).
+    visible_ids = _visible_student_ids()
+    if visible_ids is not None:
+        students_data = [s for s in students_data if s["id"] in visible_ids]
+        invoices_data = [i for i in invoices_data if i["studentId"] in visible_ids]
+
     payload = {
         "version": "1.0.0-pg18",
         "institutions": institutions_data,
@@ -501,7 +531,18 @@ def get_store():
 @sync_bp.route("/store", methods=["POST"])
 def post_store():
     """
-    Sync frontend mutations directly into PostgreSQL 18.
+    Acknowledge a frontend store push without writing it.
+
+    This endpoint used to create students straight from the client's cached
+    store: it wrote into the *first* institution regardless of the caller,
+    created students with no enrollment, role or history, and 500'd on
+    username collisions or malformed values. The hydrated store also carries
+    display defaults (e.g. blood group "O+", gender "Male") for empty fields, so
+    writing any of it back would corrupt real records. Student writes must go
+    through /students (create / update / bulk-import), which validate and
+    version every change. This endpoint now only reports, for the caller's own
+    institution, how many pushed students already exist and how many were
+    ignored — it never creates or modifies a student.
     """
     if not current_app.config.get("DATABASE_ENABLED", False):
         return jsonify({
@@ -509,61 +550,43 @@ def post_store():
             "message": "Mutations acknowledged in local runtime (database disconnected)."
         }), 200
 
-    payload = request.get_json() or {}
-    institution = Institution.query.first()
-    if not institution:
-        return jsonify({"success": False, "message": "No institution found"}), 400
+    inst_id = get_current_tenant_id(required=True)
+    payload = request.get_json(silent=True)
+    if payload is None:
+        payload = {}
+    if not isinstance(payload, dict):
+        raise APIException("Request body must be a JSON object.", status_code=400, error_code="INVALID_BODY")
 
-    inst_id = institution.id
+    incoming = payload.get("students") or []
+    if not isinstance(incoming, list):
+        incoming = []
 
-    # Sync Students
-    incoming_students = payload.get("students", [])
-    synced_students = 0
-    for s in incoming_students:
-        adm_no = s.get("admissionNo") or s.get("admission_number")
-        if not adm_no:
+    adm_numbers = set()
+    for s in incoming:
+        if not isinstance(s, dict):
             continue
-        existing = Student.query.filter_by(institution_id=inst_id, admission_number=adm_no.strip()).first()
-        if not existing:
-            first_name = s.get("firstName") or "Student"
-            last_name = s.get("lastName") or ""
-            email = s.get("email") or f"{adm_no.lower()}@student.stxaviers.edu.in"
-            
-            u = User.query.filter_by(email=email).first()
-            if not u:
-                from app.utils.security import hash_password
-                u = User(
-                    institution_id=inst_id,
-                    username=f"stud_{adm_no.lower()}",
-                    email=email,
-                    password_hash=hash_password("SchoolERP@Demo2026!"),
-                    first_name=first_name,
-                    last_name=last_name,
-                    phone=s.get("parentPhone"),
-                    is_active=True,
-                )
-                db.session.add(u)
-                db.session.flush()
+        adm_no = s.get("admissionNo") or s.get("admission_number")
+        if isinstance(adm_no, (str, int)) and not isinstance(adm_no, bool) and str(adm_no).strip():
+            adm_numbers.add(str(adm_no).strip().lower())
 
-            dob_str = s.get("dob") or "2010-01-01"
-            dob_val = datetime.strptime(str(dob_str)[:10], "%Y-%m-%d").date()
+    matched = 0
+    if adm_numbers:
+        from sqlalchemy import func
+        matched = Student.query.filter(
+            Student.institution_id == inst_id,
+            Student.is_deleted.is_(False),
+            func.lower(Student.admission_number).in_(adm_numbers),
+        ).count()
 
-            new_stud = Student(
-                institution_id=inst_id,
-                user_id=u.id,
-                admission_number=adm_no.strip(),
-                admission_date=date.today(),
-                date_of_birth=dob_val,
-                gender=(s.get("gender") or "OTHER").upper(),
-                blood_group=s.get("bloodGroup") or "O+",
-                status="ACTIVE",
-            )
-            db.session.add(new_stud)
-            synced_students += 1
-
-    db.session.commit()
     return jsonify({
         "success": True,
-        "message": f"Synced {synced_students} new records to PostgreSQL 18."
+        "data": {
+            "received": len(incoming),
+            "matched": matched,
+            "created": 0,
+            "updated": 0,
+            "ignored": len(incoming),
+        },
+        "message": "Store push acknowledged; no records were modified. "
+                   "Use the /students endpoints to create or edit students.",
     }), 200
-

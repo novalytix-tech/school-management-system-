@@ -9,6 +9,64 @@ import { httpClient } from './api/httpClient';
 import { notifySyncError } from './notifyBus';
 import { recycleBinService } from './recycleBinService';
 import { membershipService } from './membershipService';
+import { isServerId } from '../utils/ids';
+
+/** Outcome of the background server sync that follows an optimistic create. */
+export interface StudentSyncResult {
+  success: boolean;
+  /** The id the student now has locally (the server UUID once synced). */
+  id?: string;
+  error?: string;
+}
+
+/** Maps the UI's student status onto the backend's Student.status vocabulary. */
+export function toBackendStudentStatus(status: string | undefined): string | undefined {
+  if (!status) return undefined;
+  const s = status.toLowerCase();
+  if (s === 'active') return 'ACTIVE';
+  if (s === 'inactive' || s === 'withdrawn') return 'WITHDRAWN';
+  if (s === 'graduated' || s === 'alumni') return 'GRADUATED';
+  return status.toUpperCase();
+}
+
+/** A real (JWT) backend session exists; demo/offline personas have none. */
+const hasBackendSession = (): boolean => !!httpClient.getToken();
+
+/**
+ * Replace every occurrence of a local, browser-generated student id with the
+ * server's UUID throughout the store (students, enrollments, admissions,
+ * membership events, invoices ...). The local id is a unique random token
+ * (stud-<ts>-<rand>), so an exact string match cannot hit anything else.
+ */
+function remapStudentId(oldId: string, newId: string): void {
+  const store = ERPStorage.get();
+  const walk = (node: any): void => {
+    if (Array.isArray(node)) {
+      for (let i = 0; i < node.length; i++) {
+        if (node[i] === oldId) node[i] = newId;
+        else if (node[i] && typeof node[i] === 'object') walk(node[i]);
+      }
+      return;
+    }
+    for (const key of Object.keys(node)) {
+      const v = node[key];
+      if (v === oldId) node[key] = newId;
+      else if (v && typeof v === 'object') walk(v);
+    }
+  };
+  walk(store);
+  ERPStorage.set(store, false);
+}
+
+/** Undo an optimistic local create that the server rejected. */
+function rollbackLocalCreate(localId: string): void {
+  const store = ERPStorage.get();
+  store.students = store.students.filter(s => s.id !== localId);
+  if (store.membershipEvents) {
+    store.membershipEvents = store.membershipEvents.filter((e: any) => e.entityId !== localId);
+  }
+  ERPStorage.set(store, false);
+}
 
 export const studentService = {
   /**
@@ -97,7 +155,9 @@ export const studentService = {
     return { unique: !existing, existingStudent: existing };
   },
 
-  create: (data: Omit<Student, 'id'>): { success: boolean; data?: Student; error?: string } => {
+  create: (
+    data: Omit<Student, 'id'>
+  ): { success: boolean; data?: Student; error?: string; synced?: Promise<StudentSyncResult> } => {
     const store = ERPStorage.get();
 
     // Prevent duplicate admission numbers
@@ -139,19 +199,36 @@ export const studentService = {
     store.students = [newStudent, ...store.students];
     ERPStorage.set(store);
 
-    // Persist to PostgreSQL 18 backend; surface a sync failure instead of hiding it.
-    httpClient.post('/students', newStudent).then(res => {
-      if (!res?.success) {
-        notifySyncError(
-          'Student saved locally only',
-          res?.error?.message || 'Could not sync the new student to the database — it may not persist.'
-        );
-      }
-    }).catch(() => {
-      notifySyncError('Student saved locally only', 'Could not reach the server to sync the new student.');
-    });
+    // Demo / offline personas have no backend session: the record stays local.
+    if (!hasBackendSession()) {
+      return { success: true, data: newStudent, synced: Promise.resolve({ success: true, id: newStudent.id }) };
+    }
 
-    return { success: true, data: newStudent };
+    // Persist to the backend. On success the local stud-... id is swapped for
+    // the server UUID so later PUT/DELETE calls target the real record; on
+    // failure the optimistic insert is rolled back so no ghost student remains.
+    const localId = newStudent.id;
+    const payload: Record<string, any> = { ...newStudent, status: toBackendStudentStatus(newStudent.status) };
+    delete payload.id;
+    const fail = (error: string): StudentSyncResult => {
+      rollbackLocalCreate(localId);
+      notifySyncError('Student not saved', `${newStudent.fullName}: ${error}`);
+      return { success: false, error };
+    };
+    const synced: Promise<StudentSyncResult> = httpClient
+      .post<any>('/students', payload)
+      .then(res => {
+        const serverId: string | undefined = res?.data?.id;
+        if (res?.success && serverId && isServerId(serverId)) {
+          remapStudentId(localId, serverId);
+          return { success: true, id: serverId };
+        }
+        if (res?.success) return { success: true, id: localId };
+        return fail(res?.error?.message || 'Could not save the new student to the database.');
+      })
+      .catch(() => fail('Could not reach the server to save the new student.'));
+
+    return { success: true, data: newStudent, synced };
   },
 
   update: (id: string, updates: Partial<Student>): { success: boolean; data?: Student; error?: string } => {
@@ -206,8 +283,14 @@ export const studentService = {
       membershipService.recordStatusChange('student', updated, existing.status, updates.status);
     }
 
-    // Persist to PostgreSQL 18 backend; surface a sync failure instead of hiding it.
-    httpClient.put(`/students/${id}`, updates).then(res => {
+    // Persist to the backend only for server records (UUID ids) in a real
+    // session; demo/local ids would 404 (or 401 without a token).
+    if (!isServerId(id) || !hasBackendSession()) {
+      return { success: true, data: updated };
+    }
+    const putBody: Record<string, any> = { ...updates };
+    if (updates.status) putBody.status = toBackendStudentStatus(updates.status);
+    httpClient.put(`/students/${id}`, putBody).then(res => {
       if (!res?.success) {
         notifySyncError(
           'Changes saved locally only',
@@ -232,9 +315,7 @@ export const studentService = {
    * Returns a result object; failures carry a human-readable `error` to surface.
    */
   delete: async (id: string): Promise<{ success: boolean; error?: string }> => {
-    const isDbRecord = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(id);
-
-    if (isDbRecord) {
+    if (isServerId(id)) {
       const res = await httpClient.delete(`/students/${id}`);
       // httpClient never throws; it returns { success, error }. Treat a missing
       // record as already-gone (safe to remove locally); any other failure is
@@ -273,36 +354,63 @@ export const studentService = {
 
   /**
    * Applies a realtime student change pushed from the backend to the local store,
-   * WITHOUT echoing back to the server (set(store, false)). The store is
-   * demo-first, so for created/imported/updated we additively merge any students
-   * the local store doesn't already have (by admission number); for deleted we
-   * remove the matching student. Lists re-render via the storage-updated event.
+   * WITHOUT echoing back to the server (set(store, false)). `institutionId` is
+   * the tenant of the socket room the event arrived on. Lists re-render via the
+   * storage-updated event.
    */
-  applyRealtimeChange: async (change: { action: string; data?: { admission_number?: string } }): Promise<void> => {
+  applyRealtimeChange: async (
+    change: { action: string; data?: { id?: string; admission_number?: string } },
+    institutionId?: string
+  ): Promise<void> => {
     const action = change.action;
-    const admNo = (change.data?.admission_number || '').toString().trim();
+    const changedId = (change.data?.id || '').toString();
+    const admNo = (change.data?.admission_number || '').toString().trim().toLowerCase();
+    // Removes the changed student by server id; the admission-number fallback is
+    // limited to the socket room's own institution (numbers are only unique per school).
+    const removeLocal = (): void => {
+      const store = ERPStorage.get();
+      const before = store.students.length;
+      if (changedId) store.students = store.students.filter(s => s.id !== changedId);
+      if (store.students.length === before && admNo && institutionId) {
+        store.students = store.students.filter(
+          s => !(s.institutionId === institutionId && (s.admissionNo || '').toLowerCase() === admNo)
+        );
+      }
+      if (store.students.length !== before) ERPStorage.set(store, false);
+    };
+
     try {
       if (action === 'deleted') {
-        if (!admNo) return;
-        const store = ERPStorage.get();
-        const before = store.students.length;
-        store.students = store.students.filter(
-          s => (s.admissionNo || '').toLowerCase() !== admNo.toLowerCase()
-        );
-        if (store.students.length !== before) ERPStorage.set(store, false);
+        removeLocal();
         return;
       }
 
-      // created / imported / updated: pull the latest roster and merge in any
-      // students this tab doesn't already hold.
+      // created / imported / updated: pull the latest roster, update students we
+      // already hold (by server id) and add the ones this tab doesn't hold yet.
       const res = await httpClient.get<any>('/sync/store');
       const backendStudents = res?.data?.students;
       if (!res?.success || !Array.isArray(backendStudents)) return;
 
+      const byId = new Map<string, any>();
+      backendStudents.forEach((st: any) => { if (st?.id) byId.set(String(st.id), st); });
+
       const store = ERPStorage.get();
-      const existing = new Set(store.students.map(s => (s.admissionNo || '').toLowerCase()));
+      let changed = false;
+      store.students = store.students.map(s => {
+        const st = byId.get(s.id);
+        if (!st) return s;
+        const merged = { ...s, ...st, className: st.className || st.grade || s.className };
+        if (JSON.stringify(merged) !== JSON.stringify(s)) changed = true;
+        return merged;
+      });
+
+      const existingIds = new Set(store.students.map(s => s.id));
+      const existingAdm = new Set(store.students.map(s => (s.admissionNo || '').toLowerCase()));
       const fresh = backendStudents
-        .filter((st: any) => st.admissionNo && !existing.has(String(st.admissionNo).toLowerCase()))
+        .filter((st: any) =>
+          st.admissionNo &&
+          !existingIds.has(String(st.id)) &&
+          !existingAdm.has(String(st.admissionNo).toLowerCase()))
         .map((st: any) => ({
           ...st,
           className: st.className || st.grade || 'Class 10',
@@ -310,24 +418,51 @@ export const studentService = {
         }));
       if (fresh.length > 0) {
         store.students = [...fresh, ...store.students];
-        ERPStorage.set(store, false);
+        changed = true;
       }
+      if (changed) ERPStorage.set(store, false);
+
+      // sync/store omits WITHDRAWN students: an update that withdrew one removes it.
+      if (action === 'updated' && changedId && !byId.has(changedId)) removeLocal();
     } catch {
       /* realtime is best-effort — never throw into the socket handler */
     }
   },
 
+  /**
+   * Flips a student between active and inactive. Server records (UUID ids) are
+   * persisted with PUT /students/{id} (active -> ACTIVE, inactive -> WITHDRAWN);
+   * a failure reverts the local change and is surfaced as a sync-error toast.
+   */
   toggleStatus: (id: string): Student | undefined => {
     const store = ERPStorage.get();
     const student = store.students.find(s => s.id === id);
-    if (student) {
-      const prev = student.status;
-      student.status = student.status === 'active' ? 'inactive' : 'active';
-      ERPStorage.set(store);
-      membershipService.recordStatusChange('student', student, prev, student.status);
-      return student;
+    if (!student) return undefined;
+    const prev = student.status;
+    const next: Student['status'] = prev === 'active' ? 'inactive' : 'active';
+    student.status = next;
+    ERPStorage.set(store);
+    membershipService.recordStatusChange('student', student, prev, next);
+
+    if (isServerId(id) && hasBackendSession()) {
+      const revert = (message: string) => {
+        const current = ERPStorage.get();
+        const target = current.students.find(s => s.id === id);
+        if (target && target.status === next) {
+          target.status = prev;
+          ERPStorage.set(current);
+          membershipService.recordStatusChange('student', target, next, prev);
+        }
+        notifySyncError('Status change not saved', message);
+      };
+      httpClient
+        .put(`/students/${id}`, { status: toBackendStudentStatus(next) })
+        .then(res => {
+          if (!res?.success) revert(res?.error?.message || 'Could not update the student status on the server.');
+        })
+        .catch(() => revert('Could not reach the server to update the student status.'));
     }
-    return undefined;
+    return student;
   },
 };
 

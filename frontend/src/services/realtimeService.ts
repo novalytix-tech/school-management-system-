@@ -7,6 +7,7 @@
 // ==========================================
 
 import { io, Socket } from 'socket.io-client';
+import { httpClient, TOKEN_REFRESHED_EVENT } from './api/httpClient';
 
 export interface EntityChange {
   entity: string; // 'student' | 'class' | 'guardian' | ...
@@ -22,11 +23,37 @@ class RealtimeService {
   private handlers = new Set<ChangeHandler>();
 
   /** Connect and subscribe to a tenant's room. No-op if already on that tenant. */
+  private refreshListenerAttached = false;
+
+  /**
+   * After the HTTP client refreshes the access token, re-open the socket so the
+   * server authenticates it with the new token (the old one has expired).
+   */
+  private readonly handleTokenRefreshed = (): void => {
+    const instId = this.institutionId;
+    if (!instId) return;
+    this.disconnect();
+    this.connect(instId);
+  };
+
+  /**
+   * Connect and subscribe to a tenant's room. No-op if already on that tenant.
+   * The backend refuses sockets without a valid access token, so nothing is
+   * opened when there is no token (demo / signed-out).
+   */
   connect(institutionId: string): void {
     if (!institutionId) return;
+    if (!httpClient.getToken()) {
+      this.disconnect();
+      return;
+    }
     if (this.socket && this.institutionId === institutionId && this.socket.connected) return;
     this.disconnect();
     this.institutionId = institutionId;
+    if (!this.refreshListenerAttached && typeof window !== 'undefined') {
+      window.addEventListener(TOKEN_REFRESHED_EVENT, this.handleTokenRefreshed);
+      this.refreshListenerAttached = true;
+    }
 
     // Dev: connect straight to the Flask backend (:5000, CORS "*"); prod: same
     // origin. Long-polling only — the threading/Werkzeug backend has no WebSocket
@@ -36,6 +63,8 @@ class RealtimeService {
       ? `${window.location.protocol}//${window.location.hostname}:5000`
       : undefined;
     const socket = io(url, {
+      // Callback form: every (re)connection attempt sends the CURRENT token.
+      auth: cb => cb({ token: httpClient.getToken() }),
       path: '/socket.io',
       transports: ['polling'],
       reconnection: true,
@@ -62,6 +91,10 @@ class RealtimeService {
   }
 
   disconnect(): void {
+    if (this.refreshListenerAttached && typeof window !== 'undefined') {
+      window.removeEventListener(TOKEN_REFRESHED_EVENT, this.handleTokenRefreshed);
+      this.refreshListenerAttached = false;
+    }
     if (this.socket) {
       try { this.socket.removeAllListeners(); this.socket.disconnect(); } catch { /* ignore */ }
     }

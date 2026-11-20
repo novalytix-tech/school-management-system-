@@ -83,15 +83,17 @@ def list_guardians():
         except (ValueError, TypeError):
             raise APIException("Invalid section_id", status_code=400, error_code="INVALID_SECTION_ID")
         query = query.filter(Parent.student_parents.any(
-            StudentParent.student.has(
+            StudentParent.student.has(and_(
+                Student.is_deleted.is_(False),
                 Student.enrollments.any(and_(
                     StudentEnrollment.section_id == sec_uuid,
                     StudentEnrollment.status == "ACTIVE",
-                ))
-            )
+                )),
+            ))
         ))
 
-    page = max(1, request.args.get("page", 1, type=int))
+    # Capped so (page - 1) * limit can never overflow the BIGINT OFFSET.
+    page = min(1_000_000, max(1, request.args.get("page", 1, type=int)))
     limit = min(100, max(1, request.args.get("limit", 50, type=int)))
     total = query.count()
     parents = (

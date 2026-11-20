@@ -120,6 +120,8 @@ export const PayNowModal: React.FC<PayNowModalProps> = ({
       amount: payableAmount,
       name: schoolName,
       description: `Fee Invoice ${invoice.invoiceNo} · ${student.fullName}`,
+      // Server (UUID) invoices get a server order and are recorded by verify.
+      invoiceId: invoice.id,
       prefill: {
         name: student.parentName || student.fullName,
         email: student.parentEmail || undefined,
@@ -152,6 +154,12 @@ export const PayNowModal: React.FC<PayNowModalProps> = ({
     setProcessingStatus('Payment successful. Generating official digital receipt…');
     const paymentId = outcome.result?.razorpay_payment_id || '';
 
+    // Mirror the payment in the local ledger for the receipt view. This is a
+    // local-only update: for server invoices /razorpay/verify has already
+    // recorded the payment, so no separate /finance/invoices/{id}/pay is sent.
+    const serverNote = outcome.recordedOnServer
+      ? ` · Server receipt ${outcome.serverPaymentNumber || 'recorded'}${outcome.duplicate ? ' (already recorded)' : ''}`
+      : '';
     const res = feeService.processOnlineDemoPayment({
       invoiceId: invoice.id,
       amount: payableAmount,
@@ -159,7 +167,7 @@ export const PayNowModal: React.FC<PayNowModalProps> = ({
       payerName: student.parentName || 'Parent / Guardian',
       parentId: 'user-parent-vikram',
       studentId: student.id,
-      notes: `Paid via Razorpay · Payment ID ${paymentId}`,
+      notes: `Paid via Razorpay · Payment ID ${paymentId}${serverNote}`,
     });
 
     setIsProcessing(false);

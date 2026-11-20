@@ -197,7 +197,7 @@ def test_logout(client, auth_headers):
 
 def test_logout_all(client, auth_headers):
     """Test 11: Logout-all invalidates all active sessions for the user."""
-    headers = auth_headers("aarav.patel@student.stxaviers.edu.in")
+    headers = auth_headers("aarav.sharma@student.stxaviers.edu.in", "Aarav#601")
     res = client.post("/api/v1/auth/logout-all", headers=headers)
     assert res.status_code == 200
 

@@ -1,3 +1,4 @@
+from tests._auth import admin_headers
 """
 Task 6 tests: server-authoritative realtime events.
 Creating / deleting / importing a student emits an ``entity_changed`` SocketIO
@@ -17,7 +18,7 @@ def _tenant():
 
 
 def _headers():
-    return {"X-Institution-Id": str(_tenant().id)}
+    return admin_headers()
 
 
 def _a_section():

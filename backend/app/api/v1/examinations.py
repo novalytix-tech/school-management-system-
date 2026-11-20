@@ -2,6 +2,7 @@ import uuid
 from flask import Blueprint, request, jsonify
 from app.models import Exam, ExamSchedule, ExamResult, GradingScale, StudentEnrollment
 from app.utils.tenant import get_current_tenant_id
+from app.utils.errors import APIException
 
 examinations_bp = Blueprint("examinations", __name__, url_prefix="/examinations")
 
@@ -45,16 +46,33 @@ def list_exams():
     return jsonify({"success": True, "data": data}), 200
 
 
+def _uuid_arg(name):
+    raw = request.args.get(name)
+    if not raw:
+        return None
+    try:
+        return uuid.UUID(raw.strip())
+    except ValueError:
+        raise APIException(f"{name} must be a valid UUID", status_code=400, error_code="INVALID_ID")
+
+
 @examinations_bp.route("/results", methods=["GET"])
 def list_results():
-    exam_id = request.args.get("exam_id")
-    student_id = request.args.get("student_id")
+    institution_id = get_current_tenant_id(required=True)
+    exam_id = _uuid_arg("exam_id")
+    student_id = _uuid_arg("student_id")
 
-    query = ExamResult.query
+    # Results carry no institution column: scope through schedule -> exam.
+    query = (
+        ExamResult.query
+        .join(ExamSchedule, ExamResult.exam_schedule_id == ExamSchedule.id)
+        .join(Exam, ExamSchedule.exam_id == Exam.id)
+        .filter(Exam.institution_id == institution_id)
+    )
     if exam_id:
-        query = query.join(ExamSchedule, ExamResult.exam_schedule_id == ExamSchedule.id).filter(ExamSchedule.exam_id == uuid.UUID(exam_id))
+        query = query.filter(ExamSchedule.exam_id == exam_id)
     if student_id:
-        query = query.join(StudentEnrollment, ExamResult.enrollment_id == StudentEnrollment.id).filter(StudentEnrollment.student_id == uuid.UUID(student_id))
+        query = query.join(StudentEnrollment, ExamResult.enrollment_id == StudentEnrollment.id).filter(StudentEnrollment.student_id == student_id)
 
     results = query.all()
     data = [

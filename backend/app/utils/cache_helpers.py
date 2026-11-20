@@ -67,6 +67,18 @@ def bump_version(namespace: str, tenant: Optional[str] = None) -> None:
         pass
 
 
+def invalidate_user_display_caches(institution_id) -> None:
+    """
+    Drop cached responses that embed user display names for one institution.
+
+    The "academics" namespace caches class lists that include the class
+    teacher's name, so any user name/profile edit must call this (e.g. from the
+    users/auth profile-update endpoints) or the old name is served until expiry.
+    """
+    if institution_id:
+        bump_version("academics", str(institution_id))
+
+
 def _make_key(namespace: str) -> str:
     tenant = _tenant_key()
     version = _current_version(namespace, tenant)
@@ -75,9 +87,19 @@ def _make_key(namespace: str) -> str:
     return "resp:" + hashlib.md5(raw.encode("utf-8")).hexdigest()
 
 
-def _is_cacheable(response) -> bool:
-    """Only cache clean 200 OK responses — never errors or 503s."""
-    status = getattr(response, "status_code", 200)
+def _is_cacheable(result) -> bool:
+    """Only cache clean 200 OK responses — never errors or 503s.
+
+    Views may return a Response or a ``(body, status[, headers])`` tuple; the
+    tuple's explicit status wins over the body Response's default 200.
+    """
+    if isinstance(result, tuple):
+        if len(result) >= 2 and isinstance(result[1], int) and not isinstance(result[1], bool):
+            status = result[1]
+        else:
+            status = getattr(result[0], "status_code", 200) if result else 200
+    else:
+        status = getattr(result, "status_code", 200)
     return status == 200
 
 
@@ -109,8 +131,7 @@ def cached_response(namespace: str, timeout: int = 120) -> Callable:
 
             try:
                 if key is not None:
-                    body = result[0] if isinstance(result, tuple) else result
-                    if _is_cacheable(body):
+                    if _is_cacheable(result):
                         cache.set(key, result, timeout=timeout)
             except Exception:
                 pass

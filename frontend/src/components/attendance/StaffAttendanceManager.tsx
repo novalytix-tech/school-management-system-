@@ -16,6 +16,7 @@ import { EmptyState } from '../common/EmptyState';
 import { SearchInput } from '../common/SearchInput';
 import { formatDate } from '../../utils/formatters';
 import { exportToCSV } from '../../utils/export';
+import { useClampPage } from '../../utils/usePagination';
 import { CalendarCheck, CheckCircle, Clock, AlertCircle, Save, Download, Calendar, Search, Edit, History, UserCheck, AlertTriangle, Users } from 'lucide-react';
 
 export const StaffAttendanceManager: React.FC = () => {
@@ -158,6 +159,9 @@ export const StaffAttendanceManager: React.FC = () => {
     const start = (currentPage - 1) * pageSize;
     return filteredHistory.slice(start, start + pageSize);
   }, [filteredHistory, currentPage, pageSize]);
+
+  // After deletes shrink the list, stay on the last page that still has rows.
+  useClampPage(currentPage, setCurrentPage, filteredHistory.length, pageSize);
 
   useEffect(() => {
     setCurrentPage(1);

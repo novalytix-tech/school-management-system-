@@ -6,7 +6,7 @@ from flask_jwt_extended import (
 from sqlalchemy.orm import selectinload, joinedload
 from app.extensions import limiter, db
 from app.models import User, Student, StaffProfile, Parent, Role, UserRole, RolePermission
-from app.services.auth_service import AuthService
+from app.services.auth_service import AuthService, clean_text_field, clean_phone
 from app.services.dev_auth_service import DevAuthService, is_dev_auth_active
 from app.utils.errors import APIException, DatabaseUnavailableError
 
@@ -443,16 +443,31 @@ def update_current_user_profile():
         raise APIException(message="User not found.", status_code=404, error_code="USER_NOT_FOUND")
 
     data = request.get_json(silent=True) or {}
-    if "first_name" in data and data["first_name"]:
-        user.first_name = data["first_name"].strip()
-    if "last_name" in data and data["last_name"]:
-        user.last_name = data["last_name"].strip()
+    if not isinstance(data, dict):
+        raise APIException(message="Request body must be a JSON object.", status_code=400)
+
+    # Validate everything before mutating the user (types and column lengths
+    # → 400 instead of a 500 from the database).
+    updates = {}
+    for field in ("first_name", "last_name"):
+        if field in data and data[field] not in (None, ""):
+            value = clean_text_field(data[field], field, 100, required=True)
+            updates[field] = value
     if "phone" in data:
-        user.phone = data["phone"].strip() if data["phone"] else None
+        # Phones are not unique: a family shares one number across the parent's
+        # and the children's logins.
+        updates["phone"] = clean_phone(data["phone"])
     if "avatar_url" in data:
-        user.avatar_url = data["avatar_url"].strip() if data["avatar_url"] else None
+        updates["avatar_url"] = clean_text_field(data["avatar_url"], "avatar_url", 500)
+
+    for field, value in updates.items():
+        setattr(user, field, value)
 
     db.session.commit()
+    # Class lists cache the class teacher's display name.
+    if updates.keys() & {"first_name", "last_name"}:
+        from app.utils.cache_helpers import invalidate_user_display_caches
+        invalidate_user_display_caches(user.institution_id)
 
     return jsonify({
         "success": True,

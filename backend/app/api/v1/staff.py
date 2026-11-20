@@ -1,8 +1,8 @@
 import uuid
 from flask import Blueprint, request, jsonify
-from flask_jwt_extended import get_jwt_identity
+from flask_jwt_extended import get_jwt_identity, verify_jwt_in_request
 from app.extensions import db
-from app.models import StaffProfile, Department, LeaveRequest, LeaveApproval, User
+from app.models import StaffProfile, Department, LeaveRequest, LeaveApproval
 from app.utils.tenant import get_current_tenant_id
 from app.utils.errors import APIException
 
@@ -91,28 +91,49 @@ def list_leaves():
     return jsonify({"success": True, "data": data}), 200
 
 
+# Accept both the verb ("APPROVE") and the resulting state ("APPROVED").
+_LEAVE_ACTIONS = {
+    "APPROVE": "APPROVED",
+    "APPROVED": "APPROVED",
+    "REJECT": "REJECTED",
+    "REJECTED": "REJECTED",
+}
+
+
 @staff_bp.route("/leaves/<uuid:leave_id>/action", methods=["PUT"])
 def take_leave_action(leave_id):
-    leave = LeaveRequest.query.filter_by(id=leave_id).first()
+    verify_jwt_in_request()
+    approver_id = get_jwt_identity()
+    if not approver_id:
+        raise APIException("Authentication required", status_code=401, error_code="UNAUTHORIZED")
+
+    institution_id = get_current_tenant_id(required=True)
+    leave = LeaveRequest.query.filter_by(id=leave_id, institution_id=institution_id).first()
     if not leave:
         raise APIException("Leave request not found", status_code=404)
 
-    payload = request.get_json() or {}
-    action = payload.get("action", "").upper()  # APPROVED, REJECTED
-    if action not in {"APPROVED", "REJECTED"}:
-        raise APIException("Action must be either APPROVED or REJECTED", status_code=400)
+    payload = request.get_json(silent=True)
+    if not isinstance(payload, dict):
+        raise APIException("Request body must be a JSON object", status_code=400)
 
-    approver_id = get_jwt_identity()
-    if not approver_id:
-        u = User.query.filter_by(is_active=True).first()
-        approver_id = str(u.id) if u else None
+    raw_action = payload.get("action")
+    action = _LEAVE_ACTIONS.get(raw_action.strip().upper()) if isinstance(raw_action, str) else None
+    if not action:
+        raise APIException("Action must be either APPROVE or REJECT", status_code=400)
+
+    comments = payload.get("comments", payload.get("remarks"))
+    if comments is not None and not isinstance(comments, str):
+        raise APIException("comments must be a string", status_code=400)
+
+    if leave.approval is not None or leave.status in {"APPROVED", "REJECTED"}:
+        raise APIException("Leave request has already been decided", status_code=409, error_code="ALREADY_DECIDED")
 
     leave.status = action
     approval = LeaveApproval(
         leave_request_id=leave.id,
         approver_user_id=uuid.UUID(str(approver_id)),
         decision=action,
-        comments=payload.get("comments"),
+        remarks=comments,
     )
     db.session.add(approval)
     db.session.commit()

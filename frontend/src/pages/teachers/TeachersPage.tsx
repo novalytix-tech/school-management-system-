@@ -19,6 +19,7 @@ import { accountService } from '../../services/accountService';
 import { useERP } from '../../context/ERPContext';
 import { formatDate } from '../../utils/formatters';
 import { exportToCSV } from '../../utils/export';
+import { useClampPage } from '../../utils/usePagination';
 import { EntityToolbox, ToolboxColumn } from '../../components/common/EntityToolbox';
 import { pickField } from '../../utils/csv';
 import { Download, Eye, Edit, Trash2, RotateCcw } from 'lucide-react';
@@ -216,6 +217,9 @@ export const TeachersPage: React.FC = () => {
     const start = (currentPage - 1) * pageSize;
     return filteredTeachers.slice(start, start + pageSize);
   }, [filteredTeachers, currentPage, pageSize]);
+
+  // After deletes shrink the list, stay on the last page that still has rows.
+  useClampPage(currentPage, setCurrentPage, filteredTeachers.length, pageSize);
 
   const departments = useMemo(() => {
     const set = new Set(teachers.map(t => t.department));

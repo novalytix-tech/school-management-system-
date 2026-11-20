@@ -1,7 +1,9 @@
+import html
 import uuid
 from datetime import date, datetime, timezone
 from flask import Blueprint, request, jsonify
-from flask_jwt_extended import get_jwt_identity
+from flask_jwt_extended import get_jwt_identity, get_jwt
+from sqlalchemy import or_
 from app.extensions import db
 from app.models import Notice, Message, User
 from app.utils.tenant import get_current_tenant_id
@@ -10,6 +12,49 @@ from app.services.sms_service import sms_service
 from app.services.email_service import email_service
 
 communications_bp = Blueprint("communications", __name__, url_prefix="/communications")
+
+MAILBOX_ADMIN_ROLES = {"school_admin", "super_admin"}
+
+
+def _json_body():
+    payload = request.get_json(silent=True)
+    if payload is None:
+        return {}
+    if not isinstance(payload, dict):
+        raise APIException("Request body must be a JSON object", status_code=400)
+    return payload
+
+
+def _str_field(payload, *keys, default="", max_len=None):
+    """First present value among keys, which must be a string."""
+    for key in keys:
+        value = payload.get(key)
+        if value is None or value == "":
+            continue
+        if not isinstance(value, str):
+            raise APIException(f"{key} must be a string", status_code=400)
+        value = value.strip()
+        if max_len and len(value) > max_len:
+            raise APIException(f"{key} must be at most {max_len} characters", status_code=400)
+        return value
+    return default
+
+
+def _uuid(value, field):
+    if not isinstance(value, str):
+        raise APIException(f"{field} must be a valid UUID", status_code=400, error_code="INVALID_ID")
+    try:
+        return uuid.UUID(value.strip())
+    except ValueError:
+        raise APIException(f"{field} must be a valid UUID", status_code=400, error_code="INVALID_ID")
+
+
+def _actor_id():
+    """The authenticated user (never a 'first active user' fallback)."""
+    identity = get_jwt_identity()
+    if not identity:
+        raise APIException("Authentication required", status_code=401, error_code="AUTH_REQUIRED")
+    return uuid.UUID(str(identity))
 
 
 # -------------------------------------------------------------
@@ -24,16 +69,14 @@ def send_credentials():
     `channels` is a list like ["sms", "email"]; defaults to whatever contact info is present.
     Returns the real send result per channel so the UI can report success or failure honestly.
     """
-    payload = request.get_json(silent=True) or {}
+    payload = _json_body()
 
-    name = (payload.get("name") or payload.get("person_name") or "User").strip()
-    role = (payload.get("role") or "user").strip()
-    login_id = (payload.get("login_id") or payload.get("loginId") or "").strip()
-    temporary_password = (
-        payload.get("temporary_password") or payload.get("temporaryPassword") or ""
-    ).strip()
-    phone = (payload.get("phone") or "").strip()
-    email = (payload.get("email") or "").strip()
+    name = _str_field(payload, "name", "person_name", default="User", max_len=200)
+    role = _str_field(payload, "role", default="user", max_len=50)
+    login_id = _str_field(payload, "login_id", "loginId", max_len=255)
+    temporary_password = _str_field(payload, "temporary_password", "temporaryPassword", max_len=255)
+    phone = _str_field(payload, "phone", max_len=50)
+    email = _str_field(payload, "email", max_len=255)
 
     if not login_id or not temporary_password:
         raise APIException(
@@ -43,6 +86,8 @@ def send_credentials():
         )
 
     channels = payload.get("channels")
+    if channels and (not isinstance(channels, list) or not all(isinstance(c, str) for c in channels)):
+        raise APIException("channels must be a list of strings", status_code=400)
     if not channels:
         channels = []
         if phone:
@@ -74,11 +119,13 @@ def send_credentials():
                 f"Login ID: {login_id}\nTemporary Password: {temporary_password}\n\n"
                 "Please log in and change your password immediately.\n"
             )
+            # Every interpolated value is user-supplied: escape it for HTML.
+            e = html.escape
             html_body = (
-                f"<p>Hello <strong>{name}</strong>,</p>"
-                f"<p>Your {role} account has been created.</p>"
-                f"<p><strong>Login ID:</strong> {login_id}<br>"
-                f"<strong>Temporary Password:</strong> {temporary_password}</p>"
+                f"<p>Hello <strong>{e(name)}</strong>,</p>"
+                f"<p>Your {e(role)} account has been created.</p>"
+                f"<p><strong>Login ID:</strong> {e(login_id)}<br>"
+                f"<strong>Temporary Password:</strong> {e(temporary_password)}</p>"
                 "<p>Please log in and change your password immediately.</p>"
             )
             sent = email_service._send_email(email, subject, html_body, text_body)
@@ -132,30 +179,24 @@ def list_notices():
 @communications_bp.route("/notices", methods=["POST"])
 def create_notice():
     institution_id = get_current_tenant_id(required=True)
-    payload = request.get_json() or {}
+    payload = _json_body()
 
-    title = payload.get("title")
-    content = payload.get("content")
+    title = _str_field(payload, "title", max_len=255)
+    content = _str_field(payload, "content")
     if not title or not content:
         raise APIException("title and content are required", status_code=400)
 
-    author_id = get_jwt_identity()
-    if not author_id:
-        u = User.query.filter_by(is_active=True).first()
-        author_id = str(u.id) if u else None
-
-    if not author_id:
-        raise APIException("Author identity required", status_code=400)
+    author_id = _actor_id()
 
     notice = Notice(
         institution_id=institution_id,
-        author_user_id=uuid.UUID(str(author_id)),
-        title=title.strip(),
-        content=content.strip(),
-        priority=payload.get("priority", "NORMAL").upper(),
-        target_audience=payload.get("target_audience", "ALL").upper(),
+        author_user_id=author_id,
+        title=title,
+        content=content,
+        priority=_str_field(payload, "priority", default="NORMAL", max_len=20).upper(),
+        target_audience=_str_field(payload, "target_audience", default="ALL", max_len=50).upper(),
         publish_date=date.today(),
-        attachment_url=payload.get("attachment_url"),
+        attachment_url=_str_field(payload, "attachment_url", default=None, max_len=500),
     )
     db.session.add(notice)
     db.session.commit()
@@ -178,10 +219,14 @@ def list_messages():
     if institution_id:
         query = query.filter_by(institution_id=institution_id)
 
-    user_id = request.args.get("user_id") or get_jwt_identity()
-    if user_id:
-        u_uuid = uuid.UUID(str(user_id))
-        query = query.filter((Message.sender_id == u_uuid) | (Message.recipient_id == u_uuid))
+    own_id = _actor_id()
+    requested = request.args.get("user_id")
+    u_uuid = _uuid(requested, "user_id") if requested else own_id
+    if u_uuid != own_id:
+        roles = set((get_jwt() or {}).get("roles") or [])
+        if not roles & MAILBOX_ADMIN_ROLES:
+            raise APIException("You may only read your own messages", status_code=403, error_code="FORBIDDEN")
+    query = query.filter((Message.sender_id == u_uuid) | (Message.recipient_id == u_uuid))
 
     messages = query.order_by(Message.sent_at.desc()).all()
     data = [
@@ -204,28 +249,30 @@ def list_messages():
 @communications_bp.route("/messages", methods=["POST"])
 def send_message():
     institution_id = get_current_tenant_id(required=True)
-    payload = request.get_json() or {}
+    payload = _json_body()
 
     recipient_id = payload.get("recipient_id")
-    body = payload.get("body") or payload.get("content")
+    body = _str_field(payload, "body", "content")
 
     if not recipient_id or not body:
         raise APIException("recipient_id and body are required", status_code=400)
 
-    sender_id = get_jwt_identity()
-    if not sender_id:
-        u = User.query.filter_by(is_active=True).first()
-        sender_id = str(u.id) if u else None
+    recipient_uuid = _uuid(recipient_id, "recipient_id")
+    recipient = User.query.filter(
+        User.id == recipient_uuid,
+        or_(User.institution_id == institution_id, User.institution_id.is_(None)),
+    ).first()
+    if not recipient:
+        raise APIException("Recipient not found", status_code=404)
 
-    if not sender_id:
-        raise APIException("Sender identity required", status_code=400)
+    sender_id = _actor_id()
 
     msg = Message(
         institution_id=institution_id,
-        sender_id=uuid.UUID(str(sender_id)),
-        recipient_id=uuid.UUID(str(recipient_id)),
-        subject=payload.get("subject"),
-        body=body.strip(),
+        sender_id=sender_id,
+        recipient_id=recipient.id,
+        subject=_str_field(payload, "subject", default=None, max_len=255),
+        body=body,
         sent_at=datetime.now(timezone.utc),
         is_read=False,
     )

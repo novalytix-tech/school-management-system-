@@ -6,8 +6,9 @@
 /**
  * Parses CSV text into an array of row objects keyed by the header row.
  * Handles quoted fields, escaped quotes (""), commas inside quotes and CRLF.
+ * Pass delimiter '\t' for tab-separated text (e.g. cells copied from Excel).
  */
-export function parseCSV(text: string): Record<string, string>[] {
+export function parseCSV(text: string, delimiter: ',' | '\t' = ','): Record<string, string>[] {
   // Strip UTF-8 BOM that Excel / Google Sheets prepend — otherwise the first
   // column header gets corrupted (e.g. "﻿Admission No") and every row is skipped.
   text = text.replace(/^﻿/, '');
@@ -32,7 +33,7 @@ export function parseCSV(text: string): Record<string, string>[] {
       }
     } else if (c === '"') {
       inQuotes = true;
-    } else if (c === ',') {
+    } else if (c === delimiter) {
       cur.push(field);
       field = '';
     } else if (c === '\n') {
@@ -86,4 +87,13 @@ export function toTSV(headers: string[], rows: (string | number | null | undefin
   const esc = (v: string | number | null | undefined) =>
     String(v ?? '').replace(/\t/g, ' ').replace(/\r?\n/g, ' ');
   return [headers.join('\t'), ...rows.map(r => r.map(esc).join('\t'))].join('\n');
+}
+
+/**
+ * Detects whether pasted text is tab-separated (what Excel / Google Sheets put
+ * on the clipboard) by looking at its header line.
+ */
+export function detectDelimiter(text: string): ',' | '\t' {
+  const firstLine = text.replace(/^﻿/, '').split(/\r?\n/, 1)[0] || '';
+  return firstLine.includes('\t') ? '\t' : ',';
 }

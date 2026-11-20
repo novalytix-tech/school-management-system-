@@ -1,5 +1,6 @@
 from flask import jsonify
 from marshmallow import ValidationError
+from sqlalchemy.exc import DataError, IntegrityError
 from werkzeug.exceptions import HTTPException
 
 
@@ -127,6 +128,43 @@ def register_error_handlers(app):
             }
         }), 500
 
+    def _rollback():
+        try:
+            from app.extensions import db
+            db.session.rollback()
+        except Exception:
+            pass
+
+    @app.errorhandler(IntegrityError)
+    def handle_integrity_error(error):
+        # Duplicates and broken references are client errors, not crashes. The
+        # session must be rolled back or every later query on it fails too.
+        _rollback()
+        pgcode = getattr(getattr(error, "orig", None), "pgcode", None)
+        if pgcode == "23505":
+            return jsonify({"success": False, "error": {
+                "code": "DUPLICATE_RECORD",
+                "message": "A record with these details already exists.",
+            }}), 409
+        if pgcode == "23503":
+            return jsonify({"success": False, "error": {
+                "code": "INVALID_REFERENCE",
+                "message": "A referenced record does not exist.",
+            }}), 400
+        return jsonify({"success": False, "error": {
+            "code": "CONSTRAINT_VIOLATION",
+            "message": "The submitted data violates a data integrity rule.",
+        }}), 400
+
+    @app.errorhandler(DataError)
+    def handle_data_error(error):
+        # Over-long strings, out-of-range numbers, malformed values for the column type.
+        _rollback()
+        return jsonify({"success": False, "error": {
+            "code": "INVALID_INPUT",
+            "message": "One or more values are invalid or too long.",
+        }}), 400
+
     @app.errorhandler(Exception)
     def handle_generic_exception(error):
         if isinstance(error, HTTPException):
@@ -138,7 +176,8 @@ def register_error_handlers(app):
                 }
             }), error.code
 
-        app.logger.exception("Unhandled unhandled exception: %s", error)
+        _rollback()
+        app.logger.exception("Unhandled exception: %s", error)
         return jsonify({
             "success": False,
             "error": {

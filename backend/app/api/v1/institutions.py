@@ -11,6 +11,9 @@ institutions_bp = Blueprint("institutions", __name__, url_prefix="/institutions"
 # drop the cache whenever settings are updated.
 institutions_bp.after_request(invalidate_on_write("institutions"))
 
+# Matches InstitutionSetting.setting_key String(100).
+MAX_SETTING_KEY_LENGTH = 100
+
 
 @institutions_bp.route("/current", methods=["GET"])
 @cached_response("institutions", timeout=300)
@@ -56,7 +59,17 @@ def update_institution_settings():
     if not inst:
         raise APIException("Institution not found", status_code=404)
 
-    payload = request.get_json() or {}
+    payload = request.get_json(silent=True)
+    if not isinstance(payload, dict):
+        raise APIException("Request body must be a JSON object of setting key/value pairs", status_code=400)
+    for key in payload:
+        if not key.strip():
+            raise APIException("Setting keys must be non-empty", status_code=400)
+        if len(key) > MAX_SETTING_KEY_LENGTH:
+            raise APIException(
+                f"Setting key must be at most {MAX_SETTING_KEY_LENGTH} characters", status_code=400
+            )
+
     for key, value in payload.items():
         setting = InstitutionSetting.query.filter_by(
             institution_id=institution_id,

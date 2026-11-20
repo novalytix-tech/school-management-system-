@@ -7,8 +7,65 @@ from app.models import (
 )
 from app.utils.tenant import get_current_tenant_id
 from app.utils.errors import APIException
+from app.utils.cache_helpers import bump_version
 
 admissions_bp = Blueprint("admissions", __name__, url_prefix="/admissions")
+
+# Allowed application status transitions. ENROLLED is terminal; a REJECTED
+# application may be re-opened for review.
+APPLICATION_TRANSITIONS = {
+    "SUBMITTED": {"UNDER_REVIEW", "ASSESSMENT_SCHEDULED", "OFFERED", "REJECTED"},
+    "UNDER_REVIEW": {"ASSESSMENT_SCHEDULED", "OFFERED", "REJECTED"},
+    "ASSESSMENT_SCHEDULED": {"UNDER_REVIEW", "OFFERED", "REJECTED"},
+    "OFFERED": {"ENROLLED", "REJECTED"},
+    "ENROLLED": set(),
+    "REJECTED": {"UNDER_REVIEW"},
+}
+
+
+def _json_body():
+    payload = request.get_json(silent=True)
+    if payload is None:
+        return {}
+    if not isinstance(payload, dict):
+        raise APIException("Request body must be a JSON object", status_code=400)
+    return payload
+
+
+def _opt_str(payload, *keys, max_len=255):
+    """First non-empty value among keys; must be a string when present."""
+    for key in keys:
+        value = payload.get(key)
+        if value is None or value == "":
+            continue
+        if not isinstance(value, str) or len(value.strip()) > max_len:
+            raise APIException(f"{key} must be a string (max {max_len} characters)", status_code=400)
+        if value.strip():
+            return value.strip()
+    return None
+
+
+def _parse_dob(raw, field="date_of_birth"):
+    if not isinstance(raw, str):
+        raise APIException(f"{field} must be a date in YYYY-MM-DD format", status_code=400)
+    try:
+        return datetime.strptime(raw.strip()[:10], "%Y-%m-%d").date()
+    except ValueError:
+        raise APIException(f"{field} must be a date in YYYY-MM-DD format", status_code=400)
+
+
+def _tenant_class(class_id, institution_id):
+    """Resolve a class id supplied by the client, scoped to the tenant."""
+    if not isinstance(class_id, str):
+        raise APIException("class id must be a valid UUID", status_code=400, error_code="INVALID_ID")
+    try:
+        class_uuid = uuid.UUID(class_id.strip())
+    except ValueError:
+        raise APIException("class id must be a valid UUID", status_code=400, error_code="INVALID_ID")
+    class_obj = ClassLevel.query.filter_by(id=class_uuid, institution_id=institution_id).first()
+    if not class_obj:
+        raise APIException("Class not found", status_code=404)
+    return class_obj
 
 
 # -------------------------------------------------------------
@@ -58,60 +115,58 @@ def list_inquiries():
 @admissions_bp.route("/inquiries", methods=["POST"])
 def create_inquiry():
     institution_id = get_current_tenant_id(required=True)
-    payload = request.get_json() or {}
+    payload = _json_body()
 
-    first_name = payload.get("first_name") or payload.get("firstName") or "Applicant"
-    last_name = payload.get("last_name") or payload.get("lastName") or ""
-    phone = payload.get("phone_number") or payload.get("phone")
-    parent_name = payload.get("parent_name") or f"{first_name}'s Parent"
-    applicant_name = payload.get("applicant_name") or f"{first_name} {last_name}".strip()
+    first_name = _opt_str(payload, "first_name", "firstName", max_len=100) or "Applicant"
+    last_name = _opt_str(payload, "last_name", "lastName", max_len=100) or ""
+    phone = _opt_str(payload, "phone_number", "phone", max_len=50)
+    parent_name = _opt_str(payload, "parent_name", max_len=100) or f"{first_name}'s Parent"[:100]
+    applicant_name = _opt_str(payload, "applicant_name", max_len=100) or f"{first_name} {last_name}".strip()[:100]
 
     if not phone:
         raise APIException("phone is required", status_code=400)
 
     class_id = payload.get("target_class_level_id") or payload.get("class_level_id")
-    class_obj = None
-    if class_id:
-        class_obj = ClassLevel.query.filter_by(id=uuid.UUID(str(class_id))).first()
+    class_obj = _tenant_class(class_id, institution_id) if class_id else None
+    created_class = False
     if not class_obj:
         class_obj = ClassLevel.query.filter_by(institution_id=institution_id).first()
     if not class_obj:
         class_obj = ClassLevel(institution_id=institution_id, name="Grade 1", code="G1", sequence_order=1)
         db.session.add(class_obj)
         db.session.flush()
+        created_class = True
 
     # Parse optional date of birth (accepts YYYY-MM-DD)
-    dob_val = None
     dob_raw = payload.get("applicant_dob") or payload.get("dob")
-    if dob_raw:
-        try:
-            dob_val = datetime.strptime(str(dob_raw)[:10], "%Y-%m-%d").date()
-        except (ValueError, TypeError):
-            dob_val = None
+    dob_val = _parse_dob(dob_raw, "applicant_dob") if dob_raw else None
 
     inquiry = AdmissionInquiry(
         institution_id=institution_id,
         parent_name=parent_name,
         applicant_name=applicant_name,
         target_class_level_id=class_obj.id,
-        email=payload.get("email"),
-        phone=phone.strip(),
+        email=_opt_str(payload, "email", max_len=255),
+        phone=phone,
         inquiry_date=date.today(),
-        source=payload.get("source", "WEBSITE"),
+        source=_opt_str(payload, "source", max_len=50) or "WEBSITE",
         status="NEW",
-        notes=payload.get("notes"),
+        notes=_opt_str(payload, "notes", max_len=5000),
         applicant_dob=dob_val,
-        gender=payload.get("gender"),
-        previous_school=payload.get("previous_school") or payload.get("previousSchool"),
-        previous_class=payload.get("previous_class") or payload.get("previousClass"),
-        previous_board=payload.get("previous_board") or payload.get("previousBoard"),
-        interested_class_name=payload.get("interested_class_name") or payload.get("interestedClassName"),
-        address=payload.get("address"),
-        alternate_phone=payload.get("alternate_phone") or payload.get("alternateMobile"),
-        relationship_to_applicant=payload.get("relationship") or payload.get("relationship_to_applicant"),
+        gender=_opt_str(payload, "gender", max_len=20),
+        previous_school=_opt_str(payload, "previous_school", "previousSchool", max_len=255),
+        previous_class=_opt_str(payload, "previous_class", "previousClass", max_len=50),
+        previous_board=_opt_str(payload, "previous_board", "previousBoard", max_len=50),
+        interested_class_name=_opt_str(payload, "interested_class_name", "interestedClassName", max_len=100),
+        address=_opt_str(payload, "address", max_len=5000),
+        alternate_phone=_opt_str(payload, "alternate_phone", "alternateMobile", max_len=50),
+        relationship_to_applicant=_opt_str(payload, "relationship", "relationship_to_applicant", max_len=30),
     )
     db.session.add(inquiry)
     db.session.commit()
+    if created_class:
+        # The academics endpoints cache class lists; drop them for this tenant.
+        bump_version("academics", str(institution_id))
 
     return jsonify({
         "success": True,
@@ -164,10 +219,10 @@ def list_applications():
 @admissions_bp.route("/applications", methods=["POST"])
 def submit_application():
     institution_id = get_current_tenant_id(required=True)
-    payload = request.get_json() or {}
+    payload = _json_body()
 
-    first_name = payload.get("applicant_first_name") or payload.get("first_name") or payload.get("firstName")
-    last_name = payload.get("applicant_last_name") or payload.get("last_name") or payload.get("lastName") or ""
+    first_name = _opt_str(payload, "applicant_first_name", "first_name", "firstName", max_len=100)
+    last_name = _opt_str(payload, "applicant_last_name", "last_name", "lastName", max_len=100) or ""
 
     if not first_name:
         raise APIException("applicant_first_name is required", status_code=400)
@@ -181,26 +236,29 @@ def submit_application():
 
     # Resolve target class
     class_id = payload.get("target_class_level_id") or payload.get("class_applied_id") or payload.get("classId")
-    class_obj = None
-    if class_id:
-        class_obj = ClassLevel.query.filter_by(id=uuid.UUID(str(class_id))).first()
+    class_obj = _tenant_class(class_id, institution_id) if class_id else None
     if not class_obj:
         class_obj = ClassLevel.query.filter_by(institution_id=institution_id).first()
+    if not class_obj:
+        raise APIException("No class found for institution", status_code=400)
 
     dob = payload.get("date_of_birth") or payload.get("dob")
-    dob_val = datetime.strptime(str(dob)[:10], "%Y-%m-%d").date() if dob else date(2012, 1, 1)
+    dob_val = _parse_dob(dob) if dob else date(2012, 1, 1)
 
-    app_no = f"APP-{datetime.now().strftime('%Y%m%d%H%M%S')}"
+    gender = _opt_str(payload, "gender", max_len=20) or "OTHER"
+
+    # A bare timestamp collides for two submissions in the same second.
+    app_no = f"APP-{datetime.now().strftime('%Y%m%d')}-{uuid.uuid4().hex[:10].upper()}"
 
     app = AdmissionApplication(
         institution_id=institution_id,
         target_academic_year_id=ay.id,
         target_class_level_id=class_obj.id,
         application_number=app_no,
-        applicant_first_name=first_name.strip(),
-        applicant_last_name=last_name.strip(),
+        applicant_first_name=first_name,
+        applicant_last_name=last_name,
         date_of_birth=dob_val,
-        gender=payload.get("gender", "OTHER").upper(),
+        gender=gender.upper(),
         submission_date=date.today(),
         status="SUBMITTED",
     )
@@ -220,19 +278,35 @@ def submit_application():
 
 @admissions_bp.route("/applications/<uuid:application_id>/status", methods=["PUT"])
 def update_application_status(application_id):
-    institution_id = get_current_tenant_id()
-    app = AdmissionApplication.query.filter_by(id=application_id).first()
+    institution_id = get_current_tenant_id(required=True)
+    app = (
+        AdmissionApplication.query
+        .filter_by(id=application_id, institution_id=institution_id)
+        .with_for_update()
+        .first()
+    )
     if not app:
         raise APIException("Application not found", status_code=404)
 
-    payload = request.get_json() or {}
-    new_status = payload.get("status", "").upper()
-    valid_statuses = {"SUBMITTED", "UNDER_REVIEW", "ASSESSMENT_SCHEDULED", "OFFERED", "ENROLLED", "REJECTED"}
-    if new_status not in valid_statuses:
+    payload = _json_body()
+    raw_status = payload.get("status")
+    if not isinstance(raw_status, str) or not raw_status.strip():
+        raise APIException("status is required", status_code=400)
+    new_status = raw_status.strip().upper()
+    valid_statuses = sorted(APPLICATION_TRANSITIONS)
+    if new_status not in APPLICATION_TRANSITIONS:
         raise APIException(f"Invalid status. Must be one of: {', '.join(valid_statuses)}", status_code=400)
 
-    app.status = new_status
-    db.session.commit()
+    current = (app.status or "SUBMITTED").upper()
+    if new_status != current:
+        allowed = APPLICATION_TRANSITIONS.get(current, set())
+        if new_status not in allowed:
+            raise APIException(
+                f"Cannot move an application from {current} to {new_status}",
+                status_code=409, error_code="INVALID_STATUS_TRANSITION",
+            )
+        app.status = new_status
+        db.session.commit()
 
     return jsonify({
         "success": True,

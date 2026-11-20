@@ -10,6 +10,7 @@ import { feeService, AdminFeeStats } from '../../services/feeService';
 import { studentService } from '../../services/studentService';
 import { formatCurrencyINR, formatCurrencyINRWithDecimals, formatDate } from '../../utils/formatters';
 import { exportToCSV } from '../../utils/export';
+import { useClampPage } from '../../utils/usePagination';
 import { Modal } from '../common/Modal';
 import { Pagination } from '../common/Pagination';
 import { SearchInput } from '../common/SearchInput';
@@ -110,6 +111,9 @@ export const AdminFeePortal: React.FC = () => {
     return filteredInvoices.slice(start, start + pageSize);
   }, [filteredInvoices, currentPage, pageSize]);
 
+  // Keep the ledger page valid when rows disappear (deletes, filter changes).
+  useClampPage(currentPage, setCurrentPage, filteredInvoices.length, pageSize);
+
   // Filtered Transactions
   const filteredTransactions = useMemo(() => {
     return transactions.filter(t => {
@@ -199,7 +203,7 @@ export const AdminFeePortal: React.FC = () => {
     setStoreVersion(v => v + 1);
   };
 
-  const handleRecordManualPayment = (e: React.FormEvent) => {
+  const handleRecordManualPayment = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!paymentTargetInvoice) return;
     setPaymentError('');
@@ -214,6 +218,15 @@ export const AdminFeePortal: React.FC = () => {
 
     if (!res.success) {
       setPaymentError(res.error || 'Payment recording failed.');
+      return;
+    }
+
+    // Server invoices are only confirmed once the backend accepts the payment;
+    // on failure the local ledger has already been rolled back.
+    const synced: { success: boolean; error?: string } = res.synced ? await res.synced : { success: true };
+    if (!synced.success) {
+      setPaymentError(synced.error || 'The payment could not be recorded on the server.');
+      setStoreVersion(v => v + 1);
       return;
     }
 

@@ -284,11 +284,13 @@ def test_library_and_circulation(client, auth_headers):
     copy_id = created_book["copies"][0]["id"]
 
     # Borrow with student user ID
+    # Use a seeded student: the first list item can be a student another test
+    # created (whose login may already be gone), which made re-runs flaky.
     stud_res = client.get("/api/v1/students", headers=headers)
-    stud_email = stud_res.get_json()["data"]["items"][0]["email"]
+    assert stud_res.status_code == 200
 
     from app.models import User
-    u = User.query.filter_by(email=stud_email).first()
+    u = User.query.filter_by(email="aarav.sharma@student.stxaviers.edu.in").first()
 
     issue_res = client.post("/api/v1/library/loans/issue", json={
         "copy_id": copy_id,
@@ -337,9 +339,9 @@ def test_communications_notices_and_messages(client, auth_headers):
     assert any("Sports Meet" in n["title"] for n in notices)
 
 
-def test_sync_store_hydration(client):
-    # Public / seed store hydration
-    res = client.get("/api/v1/sync/store")
+def test_sync_store_hydration(client, auth_headers):
+    # Store hydration requires an authenticated session (it carries student PII).
+    res = client.get("/api/v1/sync/store", headers=auth_headers("principal@stxaviers.edu.in"))
     assert res.status_code == 200
     data = res.get_json()["data"]
     assert "institutions" in data

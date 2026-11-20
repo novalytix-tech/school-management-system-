@@ -7,6 +7,15 @@ import { httpClient } from './api/httpClient';
 import { ERPStorage } from './storage';
 import { UserRole } from '../types';
 
+/**
+ * A real (JWT) backend session exists. Local/demo fallbacks are only used when
+ * there is none; with a session, server failures are reported, never masked.
+ */
+const hasBackendSession = (): boolean => !!httpClient.getToken();
+
+const failureMessage = (res: { error?: { message?: string }; message?: string } | null | undefined, fallback: string) =>
+  res?.error?.message || res?.message || fallback;
+
 export interface UserAccountItem {
   id: string;
   login_id: string;
@@ -145,22 +154,25 @@ export const accountService = {
   /**
    * List all user accounts
    */
-  getAllAccounts: async (params?: { role?: string; status?: string; search?: string }): Promise<UserAccountItem[]> => {
-    try {
+  getAllAccounts: async (
+    params?: { role?: string; status?: string; search?: string }
+  ): Promise<{ success: boolean; data: UserAccountItem[]; error?: string }> => {
+    if (hasBackendSession()) {
       const query = new URLSearchParams();
       if (params?.role) query.set('role', params.role);
       if (params?.status) query.set('status', params.status);
       if (params?.search) query.set('search', params.search);
 
+      // A real session must never be shown demo accounts as if they were real:
+      // a failure (401, 5xx, network) is reported, not papered over.
       const res = await httpClient.get<UserAccountItem[]>(`/users?${query.toString()}`);
-      if (res && res.success && Array.isArray(res.data)) {
-        return res.data;
+      if (res?.success && Array.isArray(res.data)) {
+        return { success: true, data: res.data };
       }
-    } catch {
-      console.warn('Backend /users unavailable, falling back to local storage accounts.');
+      return { success: false, data: [], error: failureMessage(res, 'Could not load user accounts.') };
     }
 
-    // Local storage fallback accounts
+    // Demo / offline mode only: derive accounts from the local store.
     const store = ERPStorage.get();
     const accounts: UserAccountItem[] = [];
 
@@ -229,7 +241,7 @@ export const accountService = {
     });
 
     // Filter
-    return accounts.filter(acc => {
+    const filtered = accounts.filter(acc => {
       if (params?.role && acc.role !== params.role) return false;
       if (params?.status && acc.status !== params.status) return false;
       if (params?.search) {
@@ -239,6 +251,7 @@ export const accountService = {
       }
       return true;
     });
+    return { success: true, data: filtered };
   },
 
   /**
@@ -252,7 +265,7 @@ export const accountService = {
     role: UserRole;
     loginId?: string;
   }): Promise<{ success: boolean; data?: UserAccountItem; error?: string }> => {
-    try {
+    if (hasBackendSession()) {
       const res = await httpClient.post<UserAccountItem>('/users', {
         first_name: data.firstName,
         last_name: data.lastName,
@@ -264,9 +277,9 @@ export const accountService = {
       if (res && res.success && res.data) {
         return { success: true, data: res.data };
       }
-      return { success: false, error: res?.error?.message || res?.message || 'Failed to create user account.' };
-    } catch {
-      // Offline fallback
+      return { success: false, error: failureMessage(res, 'Failed to create user account.') };
+    } else {
+      // Demo / offline mode only: generate a local preview account.
       const prefix = data.role === 'student' ? 'STU' : data.role === 'teacher' ? 'TCH' : data.role === 'parent' ? 'PAR' : 'USR';
       const suffix = Math.floor(1000 + Math.random() * 9000);
       const generatedId = data.loginId || `${prefix}-2026-${suffix}`;
@@ -298,40 +311,47 @@ export const accountService = {
    * Reset user password and issue a new temporary password
    */
   resetUserPassword: async (userId: string): Promise<{ success: boolean; temporaryPassword?: string; error?: string }> => {
-    try {
-      const res = await httpClient.post<{ temporary_password: string }>(`/users/${userId}/reset-password`);
-      if (res && res.success && res.data?.temporary_password) {
-        return { success: true, temporaryPassword: res.data.temporary_password };
-      }
-    } catch {}
-    // Fallback
-    const fallbackPass = `Temp#${Math.floor(1000 + Math.random() * 9000)}!`;
-    return { success: true, temporaryPassword: fallbackPass };
+    if (!hasBackendSession()) {
+      // Demo / offline mode only: a preview password for a demo account.
+      return { success: true, temporaryPassword: `Temp#${Math.floor(1000 + Math.random() * 9000)}!` };
+    }
+    // Never fabricate a password for a real account: if the server did not
+    // reset it, the old password is still the valid one.
+    const res = await httpClient.post<{ temporary_password: string }>(`/users/${userId}/reset-password`);
+    if (res?.success && res.data?.temporary_password) {
+      return { success: true, temporaryPassword: res.data.temporary_password };
+    }
+    return { success: false, error: failureMessage(res, 'Could not reset the password.') };
   },
 
   /**
    * Toggle account status (Active / Deactivated)
    */
   toggleAccountStatus: async (userId: string): Promise<{ success: boolean; newStatus?: string; error?: string }> => {
-    try {
-      const res = await httpClient.post<{ status: string }>(`/users/${userId}/toggle-status`);
-      if (res && res.success && res.data?.status) {
-        return { success: true, newStatus: res.data.status };
-      }
-    } catch {}
-    return { success: true, newStatus: 'updated' };
+    if (!hasBackendSession()) {
+      return { success: true, newStatus: 'updated' };
+    }
+    const res = await httpClient.post<{ status: string }>(`/users/${userId}/toggle-status`);
+    if (res?.success) {
+      return { success: true, newStatus: res.data?.status || 'updated' };
+    }
+    return { success: false, error: failureMessage(res, 'Could not change the account status.') };
   },
 
   /**
    * Resend credentials via SMS and/or Gmail
    */
-  resendCredentials: async (userId: string, channel: 'sms' | 'email' | 'both' = 'sms'): Promise<{ success: boolean; message?: string }> => {
-    try {
-      const res = await httpClient.post(`/users/${userId}/resend-credentials`, { channel });
-      if (res && res.success) {
-        return { success: true, message: `Credentials dispatched via ${channel.toUpperCase()}.` };
-      }
-    } catch {}
-    return { success: true, message: `Credentials dispatched via ${channel.toUpperCase()} (Mock preview).` };
+  resendCredentials: async (
+    userId: string,
+    channel: 'sms' | 'email' | 'both' = 'sms'
+  ): Promise<{ success: boolean; message?: string; error?: string }> => {
+    if (!hasBackendSession()) {
+      return { success: true, message: `Credentials dispatched via ${channel.toUpperCase()} (Mock preview).` };
+    }
+    const res = await httpClient.post(`/users/${userId}/resend-credentials`, { channel });
+    if (res?.success) {
+      return { success: true, message: `Credentials dispatched via ${channel.toUpperCase()}.` };
+    }
+    return { success: false, error: failureMessage(res, 'Could not resend the credentials.') };
   },
 };

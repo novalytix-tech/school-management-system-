@@ -6,6 +6,7 @@ import { EmptyState } from '../../../components/common/EmptyState';
 import { Pagination } from '../../../components/common/Pagination';
 import { formatDate } from '../../../utils/formatters';
 import { exportToCSV } from '../../../utils/export';
+import { useClampPage, useResetPageOn } from '../../../utils/usePagination';
 import { Download, RotateCcw, Eye, CreditCard, CheckCircle, Award } from 'lucide-react';
 
 interface ApplicationsTabProps {
@@ -65,6 +66,10 @@ export const ApplicationsTab: React.FC<ApplicationsTabProps> = ({
     const start = (currentPage - 1) * pageSize;
     return filteredApps.slice(start, start + pageSize);
   }, [filteredApps, currentPage]);
+
+  // New search/filters start from page 1; removals never strand us on an empty page.
+  useResetPageOn(setCurrentPage, [search, stageFilter, classFilter, feeFilter, docFilter]);
+  useClampPage(currentPage, setCurrentPage, filteredApps.length, pageSize);
 
   const handleExportCSV = () => {
     const headers = [

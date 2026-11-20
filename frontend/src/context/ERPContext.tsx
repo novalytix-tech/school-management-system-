@@ -18,6 +18,7 @@ import { feeService } from '../services/feeService';
 import { studentService } from '../services/studentService';
 import { teacherService } from '../services/teacherService';
 import { downloadJSONBackup } from '../utils/export';
+import { httpClient } from '../services/api/httpClient';
 
 export interface ToastMessage {
   id: string;
@@ -132,7 +133,9 @@ export const ERPProvider: React.FC<{ children: React.ReactNode }> = ({ children 
           ...customUser,
           role,
           institutionId: customUser.institutionId || (role === 'super_admin' ? undefined : 'inst-1'),
-          referenceId: customUser.referenceId || demoUser.referenceId,
+          // A real account carries its own reference id (or none); only the
+          // demo personas use the preset's id.
+          referenceId: customUser.referenceId,
         }
       : demoUser;
 
@@ -146,10 +149,31 @@ export const ERPProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   }, []);
 
   const logout = useCallback(() => {
+    // Revoke the server session (refresh cookie + access token) before the
+    // token is dropped locally; failures are ignored since we sign out anyway.
+    if (httpClient.getToken()) {
+      httpClient.post('/auth/logout').catch(() => undefined);
+    }
+    httpClient.setToken(null);
+    realtimeService.disconnect();
     setIsAuthenticated(false);
     sessionStorage.removeItem('nts_erp_authenticated');
     localStorage.setItem('nts_erp_authenticated', 'false');
+    localStorage.removeItem('nts_erp_token');
+    localStorage.removeItem('nts_erp_current_user');
   }, []);
+
+  // httpClient fires this when the refresh token is rejected: the session is
+  // over, so sign out instead of leaving the UI "logged in" with failing saves.
+  useEffect(() => {
+    const handleAuthExpired = () => {
+      if (localStorage.getItem('nts_erp_authenticated') === 'true') {
+        logout();
+      }
+    };
+    window.addEventListener('nts_erp_auth_expired', handleAuthExpired);
+    return () => window.removeEventListener('nts_erp_auth_expired', handleAuthExpired);
+  }, [logout]);
 
   const switchRole = useCallback((newRole: UserRole) => {
     if (DEMO_USERS[newRole]) {
@@ -258,9 +282,8 @@ export const ERPProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       (currentUser.id && s.parentId === currentUser.id) ||
       (currentUser.email && s.parentEmail && s.parentEmail.toLowerCase() === currentUser.email.toLowerCase())
     );
-    if (matched.length > 0) return matched;
-    // Fallback: If parent account is active, provide student cohort so wards are always visible
-    return all.slice(0, 3);
+    // No linked wards means no access — never fall back to other families' children.
+    return matched;
   }, [currentRole, currentUser.referenceId, currentUser.id, currentUser.email, storeVersion]);
 
   // Selected child validated strictly against parent's authorized linked children
@@ -305,8 +328,8 @@ export const ERPProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   // logins use a placeholder institutionId ('inst-1') and stay local.
   useEffect(() => {
     const instId = currentUser?.institutionId;
-    const token = (() => { try { return localStorage.getItem('nts_erp_token'); } catch { return null; } })();
-    const isBackendTenant = !!instId && /^[0-9a-fA-F-]{36}$/.test(instId) && !!token;
+    const token = httpClient.getToken();
+    const isBackendTenant = isAuthenticated && !!instId && /^[0-9a-fA-F-]{36}$/.test(instId) && !!token;
     if (!isBackendTenant) {
       realtimeService.disconnect();
       return;
@@ -314,11 +337,11 @@ export const ERPProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     realtimeService.connect(instId!);
     const off = realtimeService.onEntityChange(change => {
       if (change.entity === 'student') {
-        studentService.applyRealtimeChange(change);
+        studentService.applyRealtimeChange(change, instId);
       }
     });
     return () => { off(); };
-  }, [currentUser?.institutionId]);
+  }, [currentUser?.institutionId, isAuthenticated]);
 
   // Persona ↔ entity correlation: the logged-in user's display identity is
   // derived LIVE from the underlying entity record (student / teacher / parent)

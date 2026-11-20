@@ -14,6 +14,7 @@ import { Pagination } from '../../components/common/Pagination';
 import { EmptyState } from '../../components/common/EmptyState';
 import { useERP } from '../../context/ERPContext';
 import { UserRole } from '../../types';
+import { useClampPage, useResetPageOn } from '../../utils/usePagination';
 
 import { ShieldCheck, UserPlus, KeyRound, RotateCcw, Lock, Unlock, Users, CheckCircle, AlertTriangle } from 'lucide-react';
 
@@ -63,18 +64,25 @@ export const AccountManagementPage: React.FC = () => {
 
   const loadAccounts = async () => {
     setLoading(true);
-    const list = await accountService.getAllAccounts({
+    const res = await accountService.getAllAccounts({
       role: roleFilter,
       status: statusFilter,
       search,
     });
-    setAccounts(list);
+    setAccounts(res.data);
+    if (!res.success) {
+      addToast('error', 'Could Not Load Accounts', res.error || 'The server did not return the account list.');
+    }
     setLoading(false);
   };
 
   useEffect(() => {
     loadAccounts();
   }, [roleFilter, statusFilter, search]);
+
+  // Back to page 1 when the filters change; keep the page valid when rows go away.
+  useResetPageOn(setCurrentPage, [roleFilter, statusFilter, search]);
+  useClampPage(currentPage, setCurrentPage, accounts.length, pageSize);
 
   // Derived metrics
   const totalCount = accounts.length;
@@ -131,6 +139,8 @@ export const AccountManagementPage: React.FC = () => {
         phone: account.phone,
         email: account.email,
       });
+    } else {
+      addToast('error', 'Password Not Reset', res.error || 'Could not reset the password. The previous password is still valid.');
     }
   };
 
@@ -142,6 +152,8 @@ export const AccountManagementPage: React.FC = () => {
       setAccounts(prev =>
         prev.map(a => (a.id === account.id ? { ...a, status: willBeActive ? 'active' : 'deactivated', is_active: willBeActive } : a))
       );
+    } else {
+      addToast('error', 'Status Not Changed', res.error || 'Could not change the account status.');
     }
   };
 

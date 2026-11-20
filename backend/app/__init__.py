@@ -72,6 +72,11 @@ def create_app(config_name=None, config_overrides=None):
     limiter.init_app(flask_app)
     cache.init_app(flask_app)
 
+    # Register the SocketIO event handlers (connect auth + institution rooms)
+    # BEFORE init_app: flask-socketio queues handlers declared while it has no
+    # server and replays them on every init_app, so each app gets them.
+    import app.sockets  # noqa: F401
+
     # Use Redis as the SocketIO message queue when configured, so realtime events
     # fan out across multiple workers/servers; falls back to single-process.
     redis_url = flask_app.config.get("REDIS_URL")

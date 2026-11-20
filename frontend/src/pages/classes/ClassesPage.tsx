@@ -393,7 +393,7 @@ export const ClassesPage: React.FC = () => {
       lastName: r.lastName,
       admissionNo: r.admissionNo,
       section_id: r.targetClassId,
-      className: `Class ${r.grade}`,
+      className: r.targetClassName || `Class ${r.grade}`,
       section: r.section,
       gender: r.gender,
       dob: r.dob,
@@ -2546,9 +2546,9 @@ export const ClassesPage: React.FC = () => {
                           <td style={{ fontWeight: 600 }}>#{r.rowNumber}</td>
                           <td style={{ fontFamily: 'monospace' }}>{r.admissionNo || 'Auto'}</td>
                           <td style={{ fontWeight: 600 }}>{r.firstName} {r.lastName}</td>
-                          <td>{r.gender}</td>
+                          <td>{r.gender || r.rawGender || '—'}</td>
                           <td>{r.dob}</td>
-                          <td>Class {r.grade}-{r.section}</td>
+                          <td>{r.targetClassName || (Number.isFinite(r.grade) ? `Class ${r.grade}` : r.gradeLabel || '—')}-{r.section}</td>
                           <td>{r.parentName}</td>
                           <td>{r.parentPhone}</td>
                           <td>

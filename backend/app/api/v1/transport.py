@@ -74,7 +74,14 @@ def list_vehicles():
 
 @transport_bp.route("/trips/active", methods=["GET"])
 def get_active_trips():
-    trips = TransportTrip.query.filter_by(status="IN_TRANSIT").all()
+    institution_id = get_current_tenant_id(required=True)
+    # Trips carry no institution column: scope through their route.
+    trips = (
+        TransportTrip.query
+        .join(TransportRoute, TransportTrip.route_id == TransportRoute.id)
+        .filter(TransportRoute.institution_id == institution_id, TransportTrip.status == "IN_TRANSIT")
+        .all()
+    )
     data = [
         {
             "id": str(t.id),

@@ -16,10 +16,17 @@ export interface ParsedImportRow {
   admissionNo?: string;
   firstName: string;
   lastName: string;
-  gender: 'Male' | 'Female' | 'Other';
+  /** '' when the cell was missing or unrecognised (reported as a row error). */
+  gender: 'Male' | 'Female' | 'Other' | '';
+  /** Raw gender cell, kept so the error report can quote it. */
+  rawGender?: string;
   dob: string;
+  /** Undefined when not supplied — never defaulted. */
   bloodGroup?: string;
+  /** Numeric grade; NaN when the cell is missing or non-numeric (see gradeLabel). */
   grade: number;
+  /** Raw grade/class text, e.g. "10", "Class 10", "Nursery", "LKG". */
+  gradeLabel?: string;
   section: string;
   rollNo?: string;
   parentName: string;
@@ -27,6 +34,19 @@ export interface ParsedImportRow {
   parentEmail?: string;
   address?: string;
   targetClassId?: string;
+  /** Name of the class the row resolved to during validation (e.g. "Class 10", "LKG"). */
+  targetClassName?: string;
+}
+
+const VALID_BLOOD_GROUPS = ['A+', 'A-', 'B+', 'B-', 'AB+', 'AB-', 'O+', 'O-'];
+
+/** Map a free-text gender cell to the ERP value; '' when missing/unknown. */
+function parseGender(raw: string): ParsedImportRow['gender'] {
+  const g = raw.trim().toLowerCase();
+  if (['m', 'male', 'boy'].includes(g)) return 'Male';
+  if (['f', 'female', 'girl'].includes(g)) return 'Female';
+  if (['o', 'other', 'others', 'transgender', 'non-binary', 'nonbinary'].includes(g)) return 'Other';
+  return '';
 }
 
 export const importService = {
@@ -165,10 +185,8 @@ export const importService = {
       return '';
     };
 
-    const rawGender = getValue(['gender', 'sex']).toLowerCase();
-    let gender: 'Male' | 'Female' | 'Other' = 'Other';
-    if (rawGender.startsWith('m')) gender = 'Male';
-    else if (rawGender.startsWith('f')) gender = 'Female';
+    const rawGender = getValue(['gender', 'sex']).trim();
+    const gender = parseGender(rawGender);
 
     const fullNameVal = getValue(['fullname', 'name', 'studentname']);
     let firstName = getValue(['firstname', 'first_name', 'fname', 'givenname']);
@@ -179,7 +197,13 @@ export const importService = {
       if (!lastName) lastName = parts.slice(1).join(' ') || '';
     }
 
-    const gradeStr = getValue(['grade', 'class', 'classgrade', 'standard']).replace(/[^0-9]/g, '');
+    // Missing / non-numeric grades are NOT defaulted to Class 10: numeric text
+    // ("10", "Class 10") parses to a number; anything else ("Nursery", "LKG")
+    // stays NaN and is resolved against class names during validation.
+    const gradeLabel = getValue(['grade', 'class', 'classgrade', 'standard']).trim();
+    const gradeDigits = gradeLabel.replace(/[^0-9]/g, '');
+    const grade = gradeDigits ? Number(gradeDigits) : NaN;
+    const bloodGroup = getValue(['bloodgroup', 'blood_group', 'bloodgrp']).trim().toUpperCase();
 
     return {
       rowNumber,
@@ -187,9 +211,11 @@ export const importService = {
       firstName,
       lastName,
       gender,
+      rawGender,
       dob: getValue(['dateofbirth', 'dob', 'birthdate']),
-      bloodGroup: getValue(['bloodgroup', 'blood_group', 'bloodgrp']) || 'O+',
-      grade: Number(gradeStr) || 10,
+      bloodGroup: bloodGroup || undefined,
+      grade,
+      gradeLabel,
       section: getValue(['section', 'sec']).toUpperCase() || 'A',
       rollNo: getValue(['rollno', 'roll_no', 'rollnumber']),
       parentName: getValue(['parentname', 'guardianname', 'fathername', 'parent_name']),
@@ -293,19 +319,65 @@ export const importService = {
         rowErrors.push(`Possible duplicate student: Already enrolled as ${dupIdentity.fullName} (${dupIdentity.admissionNo}).`);
       }
 
-      // Validate target class in this session
-      const matchedClass = classes.find(
-        c => c.grade === row.grade && c.section.toUpperCase() === row.section.toUpperCase()
-      );
-
-      if (!matchedClass) {
-        rowErrors.push(`Target class not found: No active class exists for Grade ${row.grade} Section ${row.section} in session.`);
-        invalidClasses++;
-      } else {
-        row.targetClassId = matchedClass.id;
+      // Gender: required and must be recognisable (never silently "Other").
+      const fieldErrors: { field: string; value?: string; message: string }[] = [];
+      if (!row.gender) {
+        fieldErrors.push(
+          row.rawGender
+            ? { field: 'Gender', value: row.rawGender, message: `Unknown gender "${row.rawGender}" (use Male, Female or Other).` }
+            : { field: 'Gender', message: 'Gender is required (Male, Female or Other).' }
+        );
+        missingRequired++;
       }
 
-      if (rowErrors.length > 0) {
+      // Blood group is optional, but a supplied value must be a real group.
+      if (row.bloodGroup && !VALID_BLOOD_GROUPS.includes(row.bloodGroup)) {
+        fieldErrors.push({
+          field: 'Blood Group',
+          value: row.bloodGroup,
+          message: `Invalid blood group "${row.bloodGroup}" (use ${VALID_BLOOD_GROUPS.join(', ')}).`,
+        });
+      }
+
+      // Validate target class in this session. Numeric grades match on grade;
+      // named grades (Nursery / LKG / UKG / PG …) match on the class name.
+      const sameSection = (c: { section: string }) => (c.section || '').toUpperCase() === row.section.toUpperCase();
+      let matchedClass: (typeof classes)[number] | undefined;
+      if (!row.gradeLabel) {
+        fieldErrors.push({ field: 'Grade', message: 'Grade / Class is required.' });
+        missingRequired++;
+      } else if (Number.isFinite(row.grade)) {
+        matchedClass = classes.find(c => c.grade === row.grade && sameSection(c));
+        if (!matchedClass) {
+          rowErrors.push(`Target class not found: No active class exists for Grade ${row.grade} Section ${row.section} in session.`);
+          invalidClasses++;
+        }
+      } else {
+        const label = row.gradeLabel.toLowerCase();
+        const named = classes.filter(c => c.name.trim().toLowerCase() === label);
+        matchedClass = named.find(sameSection);
+        if (named.length === 0) {
+          fieldErrors.push({
+            field: 'Grade',
+            value: row.gradeLabel,
+            message: `Unknown grade "${row.gradeLabel}": no class with that name exists in this session.`,
+          });
+          invalidClasses++;
+        } else if (!matchedClass) {
+          rowErrors.push(`Target class not found: No active class exists for ${row.gradeLabel} Section ${row.section} in session.`);
+          invalidClasses++;
+        }
+      }
+      if (matchedClass) {
+        row.targetClassId = matchedClass.id;
+        row.targetClassName = matchedClass.name;
+        row.grade = matchedClass.grade;
+      }
+
+      if (rowErrors.length > 0 || fieldErrors.length > 0) {
+        fieldErrors.forEach(fe => {
+          errors.push({ row: row.rowNumber, field: fe.field, value: fe.value, message: fe.message });
+        });
         rowErrors.forEach(msg => {
           errors.push({ row: row.rowNumber, message: msg });
         });

@@ -22,7 +22,7 @@ import {
 import { useERP } from '../../context/ERPContext';
 import { ConfirmDialog } from './ConfirmDialog';
 import { exportToCSV } from '../../utils/export';
-import { parseCSV, toTSV } from '../../utils/csv';
+import { parseCSV, toTSV, detectDelimiter } from '../../utils/csv';
 
 export interface ToolboxColumn<T> {
   header: string;
@@ -145,7 +145,9 @@ export function EntityToolbox<T>({
         addToast('warning', 'Clipboard Empty', 'Nothing to paste.');
         return;
       }
-      const records = parseCSV(text.includes(',') ? text : text.replace(/\t/g, ','));
+      // Excel/Sheets copy cells as TSV: split on tabs directly. Converting tabs
+      // to commas would break any cell that itself contains a comma.
+      const records = parseCSV(text, detectDelimiter(text));
       if (records.length === 0) {
         addToast('warning', 'Nothing to Paste', 'No valid rows were found on the clipboard.');
         return;

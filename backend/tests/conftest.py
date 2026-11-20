@@ -31,7 +31,12 @@ def app():
         db.create_all()
         # Seed test database once per session
         seed_database(_app)
-        yield _app
+
+    # Yield outside the setup context: holding one app context open for the whole
+    # session made every test request share a single SQLAlchemy session, so
+    # requests read stale identity-map rows instead of fresh DB state like they
+    # do in production (one app context per request).
+    yield _app
 
 
 @pytest.fixture(scope="function")

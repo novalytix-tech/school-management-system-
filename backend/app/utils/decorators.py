@@ -3,7 +3,7 @@ from functools import wraps
 from typing import Optional, Union
 from flask_jwt_extended import verify_jwt_in_request, get_jwt
 from app.utils.errors import APIException
-from app.models import StudentParent, Parent, ClassSubject, TeacherAssignment
+from app.models import StudentParent, Parent, ClassSubject, TeacherAssignment, Section
 
 
 def role_required(*allowed_roles: str):
@@ -154,6 +154,17 @@ def verify_teacher_class_access(teacher_user_id: Union[str, uuid.UUID], section_
 
     if "super_admin" in user_roles or "school_admin" in user_roles:
         return True
+
+    # The section's class teacher manages the whole section (attendance, roster)
+    # even without a subject allocation there. Subject-scoped checks still need
+    # a matching TeacherAssignment.
+    if not subject_id:
+        is_class_teacher = Section.query.filter(
+            Section.id == section_id,
+            Section.class_teacher_id == teacher_user_id,
+        ).first()
+        if is_class_teacher:
+            return True
 
     query = TeacherAssignment.query.join(ClassSubject).filter(
         TeacherAssignment.teacher_id == teacher_user_id,

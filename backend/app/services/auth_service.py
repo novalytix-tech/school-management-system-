@@ -20,8 +20,160 @@ from app.utils.security import (
 from app.services.email_service import email_service
 
 
+_EPOCH = datetime(1970, 1, 1, tzinfo=timezone.utc)
+
+# Shared demo credentials accepted by the demo-password fallback (see
+# _demo_passwords_allowed). Never valid unless that fallback is enabled.
+DEMO_PASSWORDS = frozenset({
+    "SchoolERP@Demo2026!", "shiva@123",
+    "admin123", "teacher123", "student123", "parent123", "superadmin123", "supplier123",
+    "Principal#2026!", "Teacher#Ananya26!", "Teacher#Sunita26!", "Teacher#Rajesh26!", "Teacher#Priya26!",
+    "SuperAdmin#2026!", "Parent#2026!", "Supplier#2026!",
+})
+
+
+def _demo_passwords_allowed() -> bool:
+    """Whether the shared demo-password fallback may be used.
+
+    This used to switch on whenever DEBUG was set or FLASK_ENV was
+    development/testing. backend/.env ships FLASK_ENV=development, so a host
+    started with that file accepted "admin123" & co. as a master password for
+    every non-student account. The fallback is now strictly opt-in:
+
+    * ALLOW_DEMO_PASSWORDS=true (env var or app config) for demo/preview hosts;
+    * the TESTING config, because the test-suite logs seeded staff in with the
+      shared demo password rather than each account's own seed password.
+
+    DEBUG and FLASK_ENV no longer enable it.
+    """
+    if current_app.config.get("TESTING"):
+        return True
+    flag = current_app.config.get("ALLOW_DEMO_PASSWORDS")
+    if flag is None:
+        flag = os.getenv("ALLOW_DEMO_PASSWORDS", "")
+    if isinstance(flag, bool):
+        return flag
+    return str(flag).strip().lower() in ("1", "true", "yes", "on")
+
+
+def _issued_at_claims() -> Dict[str, Any]:
+    """Sub-second issue time carried in tokens we mint.
+
+    The standard 'iat' claim has whole-second granularity, so it cannot order a
+    token against a global revocation made within the same second. 'iat_us'
+    (microseconds since the epoch, signed with the token) can.
+    """
+    now = datetime.now(timezone.utc)
+    return {"iat_us": (now - _EPOCH) // timedelta(microseconds=1)}
+
+
+_EMAIL_RE = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
+_PHONE_RE = re.compile(r"^\+?[0-9][0-9 ()\-]*$")
+
+
+def _field_error(message: str, field: str) -> APIException:
+    return APIException(message=message, status_code=400, error_code="VALIDATION_ERROR",
+                        details={"field": field})
+
+
+def clean_text_field(value, field: str, max_len: int, required: bool = False) -> Optional[str]:
+    """Validate an optional/required free-text field: must be a string within max_len."""
+    if value is None or value == "":
+        if required:
+            raise _field_error(f"{field} is required.", field)
+        return None
+    if not isinstance(value, str):
+        raise _field_error(f"{field} must be a string.", field)
+    cleaned = value.strip()
+    if required and not cleaned:
+        raise _field_error(f"{field} is required.", field)
+    if len(cleaned) > max_len:
+        raise _field_error(f"{field} must be at most {max_len} characters.", field)
+    return cleaned or None
+
+
+def clean_email(value, field: str = "email") -> Optional[str]:
+    email = clean_text_field(value, field, 255)
+    if email is None:
+        return None
+    email = email.lower()
+    if not _EMAIL_RE.match(email):
+        raise _field_error("Enter a valid email address.", field)
+    return email
+
+
+def clean_phone(value, field: str = "phone") -> Optional[str]:
+    """Validate a phone number (also a login identifier): 7-15 digits, phone punctuation only."""
+    phone = clean_text_field(value, field, 32)
+    if phone is None:
+        return None
+    digits = re.sub(r"[^\d]", "", phone)
+    if not _PHONE_RE.match(phone) or not 7 <= len(digits) <= 15:
+        raise _field_error("Enter a valid phone number.", field)
+    return phone
+
+
 class AuthService:
     """Enterprise authentication and identity lifecycle management."""
+
+    @staticmethod
+    def is_globally_revoked(user_id: uuid.UUID, jwt_payload: Dict[str, Any]) -> bool:
+        """True when a user-wide ('all') revocation postdates this token's issue time.
+
+        Tokens minted by this service carry 'iat_us', so a token issued before a
+        logout-all/password change is revoked while a login made right after it,
+        even within the same second, is not. Tokens without 'iat_us' fall back to
+        the whole-second 'iat' and are treated conservatively: a revocation in the
+        same second as issue revokes them.
+        """
+        iat_us = jwt_payload.get("iat_us")
+        if isinstance(iat_us, int) and not isinstance(iat_us, bool):
+            issued_at = _EPOCH + timedelta(microseconds=iat_us)
+        else:
+            iat = jwt_payload.get("iat")
+            if not isinstance(iat, (int, float)) or isinstance(iat, bool):
+                # No usable issue time: any global revocation applies.
+                issued_at = None
+            else:
+                issued_at = datetime.fromtimestamp(int(iat), timezone.utc)
+
+        query = TokenBlocklist.query.filter(
+            TokenBlocklist.user_id == user_id,
+            TokenBlocklist.token_type == "all",
+        )
+        if issued_at is not None:
+            query = query.filter(TokenBlocklist.revoked_at >= issued_at)
+        return db.session.query(query.exists()).scalar()
+
+    @staticmethod
+    def _best_identifier_match(candidates, identifier: str, resolved: str, digits: str):
+        """Pick the account the identifier most specifically names.
+
+        The lookup ORs exact email/username, alias and phone matches, so more than
+        one user can match (e.g. an alias email and the account it aliases). An
+        exact match on what was typed must always win, otherwise a login could
+        resolve to a different account than the one requested.
+        """
+        def rank(u):
+            email = (u.email or "").lower()
+            username = (u.username or "").lower()
+            if email == identifier:
+                return 0
+            if username == identifier:
+                return 1
+            if email == resolved:
+                return 2
+            if username == resolved:
+                return 3
+            phone_digits = re.sub(r"[^\d]", "", u.phone or "")
+            if "@" not in identifier and len(digits) >= 7 and phone_digits.endswith(digits[-10:]):
+                return 4
+            return 5
+
+        ranked = sorted(candidates, key=rank)
+        if not ranked or rank(ranked[0]) == 5:
+            return None
+        return ranked[0]
 
     @staticmethod
     def authenticate_user(
@@ -56,7 +208,10 @@ class AuthService:
             (func.lower(User.email) == resolved_identifier) |
             (func.lower(User.username) == resolved_identifier)
         )
-        if len(digits) >= 7:
+        # Phone login only applies to phone-shaped identifiers; an email or
+        # username that merely contains digits must never match someone's phone.
+        is_phone_identifier = "@" not in clean_identifier and len(digits) >= 7
+        if is_phone_identifier:
             last10 = digits[-10:]
             filter_condition = filter_condition | (User.phone.like(f"%{last10}%"))
 
@@ -66,7 +221,7 @@ class AuthService:
         # role, per role-permission and per permission). Over a cross-region DB
         # link (e.g. Vercel/Render → Supabase Mumbai) each round-trip is ~150ms,
         # so that N+1 turns login into a multi-second request.
-        user = (
+        candidates = (
             User.query
             .options(
                 selectinload(User.user_roles)
@@ -79,7 +234,11 @@ class AuthService:
             # Soft-deleted accounts must never resolve: a student removed by an
             # admin cannot authenticate, even if a stale users row lingers.
             .filter(User.is_deleted.is_(False))
-            .first()
+            .limit(10)
+            .all()
+        )
+        user = AuthService._best_identifier_match(
+            candidates, clean_identifier, resolved_identifier, digits
         )
 
         # Generic error message to prevent account enumeration
@@ -94,18 +253,9 @@ class AuthService:
         # Verify password using Argon2id
         is_valid_pw = verify_password(password, user.password_hash)
         if not is_valid_pw:
-            # Dev/testing fallback allowing standard credentials so users are never locked out
-            is_dev = current_app.config.get("DEBUG") or current_app.config.get("TESTING") or os.getenv("FLASK_ENV") in ("development", "testing")
-            if is_dev:
-                dev_passwords = {
-                    "SchoolERP@Demo2026!", "shiva@123",
-                    "admin123", "teacher123", "student123", "parent123", "superadmin123", "supplier123",
-                    "Principal#2026!", "Teacher#Ananya26!", "Teacher#Sunita26!", "Teacher#Rajesh26!", "Teacher#Priya26!",
-                    "SuperAdmin#2026!", "Parent#2026!", "Supplier#2026!"
-                }
-                if "student" not in user.role_names and password in dev_passwords:
-                    is_valid_pw = True
-                elif password in dev_passwords and password != "SchoolERP@Demo2026!":
+            # Demo-password fallback: explicit opt-in only (see _demo_passwords_allowed).
+            if _demo_passwords_allowed() and password in DEMO_PASSWORDS:
+                if "student" not in user.role_names or password != "SchoolERP@Demo2026!":
                     is_valid_pw = True
 
         if not is_valid_pw:
@@ -137,6 +287,7 @@ class AuthService:
         # lookup filter above already blocks properly-deleted accounts. Only the
         # student role can have a student profile, so this extra round-trip is
         # skipped for every other role (admins, teachers, parents, suppliers).
+        linked_student = None
         if "student" in user.role_names:
             from app.models import Student
             linked_student = Student.query.filter_by(user_id=user.id).first()
@@ -170,6 +321,7 @@ class AuthService:
         roles = user.role_names
         permissions = user.permissions
         inst_id_str = str(user.institution_id) if user.institution_id else None
+        issued_claims = _issued_at_claims()
 
         # Build access token claims (15 minutes lifespan)
         access_claims = {
@@ -181,6 +333,7 @@ class AuthService:
             "full_name": user.full_name,
             "type": "access",
             "jti": access_jti,
+            **issued_claims,
         }
         access_token = create_access_token(
             identity=str(user.id),
@@ -192,6 +345,7 @@ class AuthService:
             "type": "refresh",
             "jti": refresh_jti,
             "institution_id": inst_id_str,
+            **issued_claims,
         }
         refresh_token = create_refresh_token(
             identity=str(user.id),
@@ -212,8 +366,22 @@ class AuthService:
                 "currency": user.institution.currency,
                 "status": user.institution.status,
             }
+        # The id of the record this account represents in /sync/store (student id,
+        # teacher user id, parent id), so the client resolves its own profile
+        # instead of guessing one.
+        reference_id = None
+        if linked_student is not None:
+            reference_id = str(linked_student.id)
+        elif "teacher" in roles:
+            reference_id = str(user.id)
+        elif "parent" in roles:
+            from app.models import Parent
+            parent = Parent.query.filter_by(user_id=user.id).first()
+            reference_id = str(parent.id) if parent else None
+
         user_payload = {
             "id": str(user.id),
+            "reference_id": reference_id,
             "username": user.username,
             "email": user.email,
             "first_name": user.first_name,
@@ -295,8 +463,27 @@ class AuthService:
                 error_code="TOKEN_REUSE_DETECTED"
             )
 
+        try:
+            user_uuid = uuid.UUID(user_id_str)
+        except (ValueError, TypeError, AttributeError):
+            raise APIException(
+                message="Malformed refresh token claims.",
+                status_code=401,
+                error_code="INVALID_REFRESH_TOKEN"
+            )
+
+        # A user-wide revocation (logout-all, password change/reset, account
+        # deactivation) must also kill refresh tokens issued before it; decode_token
+        # does not consult the blocklist loader, so check it explicitly here.
+        if AuthService.is_globally_revoked(user_uuid, refresh_payload):
+            raise APIException(
+                message="This session has been revoked. Please authenticate again.",
+                status_code=401,
+                error_code="TOKEN_REVOKED"
+            )
+
         # Fetch user
-        user = db.session.get(User, uuid.UUID(user_id_str))
+        user = db.session.get(User, user_uuid)
         if not user or not user.is_active:
             raise APIException(
                 message="User account is inactive or no longer exists.",
@@ -319,6 +506,7 @@ class AuthService:
         new_access_jti = str(uuid.uuid4())
         new_refresh_jti = str(uuid.uuid4())
         inst_id_str = str(user.institution_id) if user.institution_id else None
+        issued_claims = _issued_at_claims()
 
         access_claims = {
             "institution_id": inst_id_str,
@@ -329,6 +517,7 @@ class AuthService:
             "full_name": user.full_name,
             "type": "access",
             "jti": new_access_jti,
+            **issued_claims,
         }
         new_access_token = create_access_token(
             identity=str(user.id),
@@ -339,6 +528,7 @@ class AuthService:
             "type": "refresh",
             "jti": new_refresh_jti,
             "institution_id": inst_id_str,
+            **issued_claims,
         }
         new_refresh_token = create_refresh_token(
             identity=str(user.id),
@@ -579,8 +769,8 @@ class AuthService:
 
         is_current_valid = verify_password(current_password, user.password_hash)
         if not is_current_valid:
-            dev_fallback = "SchoolERP@Demo2026!"
-            if (current_app.config.get("ENV") in ("development", "testing") or current_app.config.get("TESTING")) and current_password == dev_fallback:
+            # Same explicit opt-in as the login fallback (see _demo_passwords_allowed).
+            if _demo_passwords_allowed() and current_password == "SchoolERP@Demo2026!":
                 is_current_valid = True
 
         if not is_current_valid:

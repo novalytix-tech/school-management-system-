@@ -6,6 +6,7 @@ import { EmptyState } from '../../../components/common/EmptyState';
 import { Pagination } from '../../../components/common/Pagination';
 import { formatDate } from '../../../utils/formatters';
 import { exportToCSV } from '../../../utils/export';
+import { useClampPage, useResetPageOn } from '../../../utils/usePagination';
 import { UserPlus, Download, RotateCcw, Eye, PhoneCall, FileText } from 'lucide-react';
 
 interface EnquiriesTabProps {
@@ -59,6 +60,10 @@ export const EnquiriesTab: React.FC<EnquiriesTabProps> = ({
     const start = (currentPage - 1) * pageSize;
     return filteredEnquiries.slice(start, start + pageSize);
   }, [filteredEnquiries, currentPage]);
+
+  // New search/filters start from page 1; removals never strand us on an empty page.
+  useResetPageOn(setCurrentPage, [search, statusFilter, sourceFilter, classFilter, counsellorFilter]);
+  useClampPage(currentPage, setCurrentPage, filteredEnquiries.length, pageSize);
 
   const handleExportCSV = () => {
     const headers = [

@@ -1,5 +1,5 @@
 import uuid
-from app.models import Student, Section, Institution, User
+from app.models import Student, Section, Institution, User, ClassLevel
 from app.extensions import db
 
 
@@ -36,7 +36,7 @@ def test_parent_child_access_restrictions(client, auth_headers, app):
 
     with app.app_context():
         # Aarav Patel is linked to Vikram Patel
-        linked_student = Student.query.filter_by(admission_number="ADM-2026-0101").first()
+        linked_student = Student.query.filter_by(admission_number="ADM-2026-0601").first()
         linked_id = str(linked_student.id)
 
         # Create an unlinked student in the same institution
@@ -70,8 +70,13 @@ def test_teacher_class_restrictions(client, auth_headers, app):
     teacher_headers = auth_headers("ananya.sharma@stxaviers.edu.in")
 
     with app.app_context():
-        # Section 10-A is assigned to Ananya Sharma
-        assigned_section = Section.query.filter_by(name="A").first()
+        # Section 10-A is assigned to Ananya Sharma (every class has a section "A",
+        # so it must be located through its class level, not by name alone).
+        assigned_section = (
+            Section.query.join(ClassLevel)
+            .filter(Section.name == "A", ClassLevel.name == "Class 10")
+            .first()
+        )
         assigned_id = str(assigned_section.id)
 
         # Create an unassigned section B

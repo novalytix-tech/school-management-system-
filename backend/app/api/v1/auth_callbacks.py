@@ -31,22 +31,16 @@ def register_jwt_callbacks(app):
             return True
 
         # Check 2: Global user session invalidation (e.g. from password reset or logout-all)
+        # Compared at microsecond precision via the token's 'iat_us' claim, so a
+        # login made right after a logout-all (same second) is not rejected.
         if user_id_str:
             try:
-                user_uuid = uuid.UUID(user_id_str)
-                iat_timestamp = jwt_payload.get("iat")
-                if iat_timestamp:
-                    token_iat = datetime.fromtimestamp(iat_timestamp, timezone.utc)
-                    # Find any global revocation event created after this token was issued
-                    global_revocation = TokenBlocklist.query.filter(
-                        TokenBlocklist.user_id == user_uuid,
-                        TokenBlocklist.token_type == "all",
-                        TokenBlocklist.revoked_at >= token_iat
-                    ).first()
-                    if global_revocation is not None:
-                        return True
-            except Exception:
-                pass
+                user_uuid = uuid.UUID(str(user_id_str))
+            except (ValueError, TypeError):
+                return True
+            from app.services.auth_service import AuthService
+            if AuthService.is_globally_revoked(user_uuid, jwt_payload):
+                return True
 
         return False
 

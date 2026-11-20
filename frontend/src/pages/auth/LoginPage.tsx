@@ -174,6 +174,7 @@ export const LoginPage: React.FC = () => {
           roles: string[];
           full_name?: string;
           institution_id?: string;
+          reference_id?: string | null;
           must_change_password?: boolean;
         };
       }>('/auth/login', {
@@ -199,7 +200,10 @@ export const LoginPage: React.FC = () => {
           role,
           phone: res.data.user.phone || demoUser.phone,
           institutionId: role === 'super_admin' ? undefined : (res.data.user.institution_id || demoUser.institutionId || 'inst-1'),
-          referenceId: demoUser.referenceId,
+          // The server-resolved record id (student / teacher / parent). Never
+          // borrow the demo persona's id: that maps a real account onto
+          // someone else's record.
+          referenceId: res.data.user.reference_id || undefined,
         });
 
         // Check if mandatory first-time password change is required
@@ -214,9 +218,13 @@ export const LoginPage: React.FC = () => {
         return;
       }
 
-      // Backend rejected the credentials (or has no such account) — accept a
-      // matching demo preset and sign in locally so every persona always works.
-      if (tryDemoPresetLogin()) return;
+      // Demo presets are only an offline fallback. When the server answered and
+      // refused the credentials (wrong password, deactivated or deleted account,
+      // suspended school) that decision is final — falling back here let revoked
+      // accounts keep signing in locally.
+      const code = res?.error?.code;
+      const serverUnreachable = !code || code === 'NETWORK_ERROR' || code === 'TIMEOUT' || code === 'DATABASE_UNAVAILABLE' || code.startsWith('HTTP_5');
+      if (serverUnreachable && tryDemoPresetLogin()) return;
       setLoginError(res?.error?.message || res?.message || 'Invalid email, Login ID, or password.');
     } catch (err: any) {
       console.warn('Login attempt fallback:', err);

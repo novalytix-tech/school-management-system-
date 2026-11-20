@@ -26,9 +26,11 @@ def health_check():
             if result:
                 db_status = "connected"
                 db_version = result.split(",")[0]
-        except Exception as e:
+        except Exception:
+            # Never expose driver/connection details on this public endpoint.
+            current_app.logger.exception("Health check database query failed")
             is_healthy = False
-            db_status = f"error: {str(e)}"
+            db_status = "error"
 
     uptime_seconds = int(time.time() - START_TIME)
     status_code = 200 if is_healthy else 503

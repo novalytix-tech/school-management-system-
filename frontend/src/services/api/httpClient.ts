@@ -16,12 +16,15 @@ export interface ApiResponse<T = any> {
   };
 }
 
+/** Fired on window after /auth/refresh issues a new access token. */
+export const TOKEN_REFRESHED_EVENT = 'nts_erp_token_refreshed';
+
 class HttpClient {
   private baseURL: string;
   private accessToken: string | null = null;
-  private isRefreshing: boolean = false;
-  private refreshSubscribers: ((token: string) => void)[] = [];
-  private refreshFailSubscribers: (() => void)[] = [];
+  // One shared in-flight refresh: every request that hits a 401 awaits the same
+  // promise, so concurrent 401s trigger a single /auth/refresh and all settle.
+  private refreshPromise: Promise<string | null> | null = null;
   private static readonly REQUEST_TIMEOUT_MS = 15000;
 
   constructor() {
@@ -52,26 +55,49 @@ class HttpClient {
     return this.accessToken || localStorage.getItem('nts_erp_access_token');
   }
 
-  private onTokenRefreshed(token: string) {
-    this.refreshSubscribers.forEach(cb => cb(token));
-    this.refreshSubscribers = [];
-    this.refreshFailSubscribers = [];
+  /** Refresh the access token once; resolves to the new token or null on failure. */
+  private refreshAccessToken(): Promise<string | null> {
+    if (!this.refreshPromise) {
+      this.refreshPromise = (async () => {
+        try {
+          const refreshRes = await this.fetchWithTimeout(`${this.baseURL}/auth/refresh`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            credentials: 'include',
+          });
+          const refreshData = refreshRes.ok ? await refreshRes.json().catch(() => null) : null;
+          const newToken: string | null = refreshData?.data?.access_token || null;
+          if (newToken) {
+            this.setToken(newToken);
+            // Lets long-lived connections (realtime socket) re-authenticate.
+            if (typeof window !== 'undefined') {
+              window.dispatchEvent(new CustomEvent(TOKEN_REFRESHED_EVENT, { detail: { token: newToken } }));
+            }
+            return newToken;
+          }
+        } catch {
+          // Network failure or timeout: treated as an expired session below.
+        }
+        this.setToken(null);
+        if (typeof window !== 'undefined') {
+          window.dispatchEvent(new CustomEvent('nts_erp_auth_expired'));
+        }
+        return null;
+      })().finally(() => {
+        this.refreshPromise = null;
+      });
+    }
+    return this.refreshPromise;
   }
 
-  // When refresh fails, release every queued request so their promises settle
-  // instead of hanging forever (a hung promise would also freeze the top loader).
-  private onTokenRefreshFailed() {
-    this.refreshFailSubscribers.forEach(cb => cb());
-    this.refreshFailSubscribers = [];
-    this.refreshSubscribers = [];
-  }
-
-  private addRefreshSubscriber(cb: (token: string) => void) {
-    this.refreshSubscribers.push(cb);
-  }
-
-  private addRefreshFailSubscriber(cb: () => void) {
-    this.refreshFailSubscribers.push(cb);
+  /** Parse a response body, tolerating empty or non-JSON error pages. */
+  private async parseJson<T>(response: Response): Promise<ApiResponse<T>> {
+    return response.json().catch(() => ({
+      success: response.ok,
+      data: null as any,
+      message: response.statusText,
+      ...(response.ok ? {} : { error: { code: `HTTP_${response.status}`, message: response.statusText || 'Request failed' } }),
+    }));
   }
 
   /** fetch() wrapper that aborts if the server does not respond in time. */
@@ -115,79 +141,19 @@ class HttpClient {
 
       // Handle 401 Unauthorized with token refresh rotation
       if (response.status === 401 && !endpoint.includes('/auth/login') && !endpoint.includes('/auth/refresh')) {
-        if (!this.isRefreshing) {
-          this.isRefreshing = true;
-          try {
-            const refreshRes = await fetch(`${this.baseURL}/auth/refresh`, {
-              method: 'POST',
-              headers: { 'Content-Type': 'application/json' },
-              credentials: 'include',
-            });
-
-            if (refreshRes.ok) {
-              const refreshData = await refreshRes.json();
-              const newToken = refreshData.data?.access_token;
-              if (newToken) {
-                this.setToken(newToken);
-                this.onTokenRefreshed(newToken);
-              } else {
-                this.setToken(null);
-                window.dispatchEvent(new CustomEvent('nts_erp_auth_expired'));
-                this.onTokenRefreshFailed();
-              }
-            } else {
-              this.setToken(null);
-              window.dispatchEvent(new CustomEvent('nts_erp_auth_expired'));
-              this.onTokenRefreshFailed();
-            }
-          } catch {
-            this.setToken(null);
-            this.onTokenRefreshFailed();
-          } finally {
-            this.isRefreshing = false;
-          }
+        const newToken = await this.refreshAccessToken();
+        if (!newToken) {
+          return {
+            success: false,
+            data: null as any,
+            error: { code: 'AUTH_EXPIRED', message: 'Session expired. Please sign in again.' },
+          };
         }
-
-        // Wait for refresh to complete then retry original request. Either path
-        // (success or failure) settles the promise so it never hangs.
-        const retryPromise = new Promise<ApiResponse<T>>((resolve) => {
-          this.addRefreshSubscriber(async (newToken) => {
-            headers.set('Authorization', `Bearer ${newToken}`);
-            try {
-              const retryRes = await this.fetchWithTimeout(url, { ...config, headers });
-              const retryJson = await retryRes.json().catch(() => ({
-                success: retryRes.ok,
-                data: null,
-                message: retryRes.statusText,
-              }));
-              resolve(retryJson);
-            } catch (err: any) {
-              resolve({
-                success: false,
-                data: null as any,
-                error: { code: 'NETWORK_ERROR', message: err?.message || 'Network request failed' },
-              });
-            }
-          });
-          this.addRefreshFailSubscriber(() => {
-            resolve({
-              success: false,
-              data: null as any,
-              error: { code: 'AUTH_EXPIRED', message: 'Session expired. Please sign in again.' },
-            });
-          });
-        });
-
-        return await retryPromise;
+        headers.set('Authorization', `Bearer ${newToken}`);
+        response = await this.fetchWithTimeout(url, { ...config, headers });
       }
 
-      const json = await response.json().catch(() => ({
-        success: response.ok,
-        data: null,
-        message: response.statusText,
-      }));
-
-      return json;
+      return await this.parseJson<T>(response);
     } catch (err: any) {
       const proc = (globalThis as any).process;
       if (!proc?.env?.VITEST) {
@@ -197,8 +163,10 @@ class HttpClient {
         success: false,
         data: null as any,
         error: {
-          code: 'NETWORK_ERROR',
-          message: err?.message || 'Network request failed',
+          code: err?.name === 'AbortError' ? 'TIMEOUT' : 'NETWORK_ERROR',
+          message: err?.name === 'AbortError'
+            ? 'The server took too long to respond. Please check your connection and try again.'
+            : err?.message || 'Network request failed',
         },
       };
     } finally {
