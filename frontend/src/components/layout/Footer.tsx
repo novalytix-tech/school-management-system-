@@ -16,7 +16,7 @@ export const Footer: React.FC = () => {
       <div className="footer-attribution">
         <span>© {currentYear}</span>
         <strong>{schoolSettings.schoolName}</strong>
-        <span>•</span>
+        <span className="footer-sep">•</span>
         <span>Academic Session {schoolSettings.academicYear}</span>
       </div>
 

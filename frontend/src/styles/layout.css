@@ -1275,7 +1275,18 @@
     flex-direction: column;
     text-align: center;
     gap: 8px;
-    padding: 12px 14px;
+    padding: 16px 14px;
+  }
+  /* Stack the attribution pieces vertically so the long school name + session
+     don't cram into one row on phones; drop the inline dot separator. */
+  .footer-attribution {
+    flex-direction: column;
+    gap: 3px;
+    text-align: center;
+    line-height: 1.5;
+  }
+  .footer-attribution .footer-sep {
+    display: none;
   }
 }
 
