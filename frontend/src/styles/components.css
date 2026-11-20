@@ -3756,107 +3756,128 @@
 /* =========================================================
    Entity Toolbox — reusable admin action bar (NTS)
    ========================================================= */
-/* Flat 2D action bar: full-width, no drop shadow, crisp solid borders. */
+/* Neumorphic 3D action bar: full-width recessed tray with raised tool buttons
+   (soft dual shadows). Pressed/active buttons invert to an accent colour to mark
+   the selected tool. Token-driven so it adapts to light & dark. */
 .entity-toolbox {
   display: flex;
-  align-items: center;
+  align-items: stretch;
   flex-wrap: wrap;
-  gap: 8px;
+  gap: 10px;
   width: 100%;
-  background: #ffffff;
-  border: 1px solid #CBD5E1;
-  border-radius: 10px;
-  padding: 12px 16px;
+  background: var(--neu-tray);
+  border: 1px solid var(--neu-divider);
+  border-radius: 14px;
+  padding: 12px 14px;
   margin-bottom: 16px;
-  box-shadow: none;
+  /* recessed tray */
+  box-shadow: inset 3px 3px 7px var(--neu-lo), inset -3px -3px 7px var(--neu-hi);
 }
 
 .entity-toolbox .tb-btn {
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  gap: 7px;
-  background: #F1F5F9;
-  border: 1px solid #CBD5E1;
-  color: #334155;
+  gap: 8px;
+  flex: 1 1 auto;            /* stretch buttons edge-to-edge */
+  min-width: 46px;
+  background: var(--neu-btn);
+  border: 1px solid transparent;
+  color: var(--neu-text);
   font-size: 13px;
   font-weight: 600;
-  padding: 9px 16px;
-  border-radius: 8px;
+  padding: 11px 16px;
+  border-radius: 12px;
   cursor: pointer;
   white-space: nowrap;
-  box-shadow: none;
-  /* animate only colours — no 3D depth/press effect for a clean 2D look */
-  transition: background-color 120ms ease, border-color 120ms ease, color 120ms ease;
+  /* raised: light highlight top-left, soft shadow bottom-right */
+  box-shadow: -4px -4px 9px var(--neu-hi), 5px 5px 11px var(--neu-lo);
+  transition: box-shadow 140ms ease, transform 100ms ease, background-color 140ms ease, color 140ms ease;
 }
 .entity-toolbox .tb-btn:hover {
-  background: #E0ECFF;
-  border-color: #93C5FD;
-  color: #1D4ED8;
+  background: var(--neu-btn-hover);
+  color: var(--neu-accent-dark);
+  transform: translateY(-1px);
+  box-shadow: -5px -5px 11px var(--neu-hi), 6px 6px 14px var(--neu-lo);
 }
-.entity-toolbox .tb-btn:active {
-  background: #DBEAFE;
-  border-color: #60A5FA;
+/* pressed-in: inset shadows + accent colour mark the active/selected tool */
+.entity-toolbox .tb-btn:active,
+.entity-toolbox .tb-btn.tb-active {
+  background: var(--neu-accent);
+  color: #ffffff;
+  border-color: var(--neu-accent-dark);
+  transform: translateY(0);
+  box-shadow: inset 3px 3px 7px rgba(0, 0, 0, 0.30), inset -3px -3px 7px rgba(255, 255, 255, 0.12);
+}
+.entity-toolbox .tb-btn.tb-active svg { color: #ffffff; }
+.entity-toolbox .tb-btn:focus-visible {
+  outline: 2px solid var(--neu-focus);
+  outline-offset: 2px;
 }
 .entity-toolbox .tb-btn svg {
   flex-shrink: 0;
 }
 
+/* Primary (New): accent-filled raised button */
 .entity-toolbox .tb-btn.tb-primary {
-  background: #2563EB;
-  border-color: #2563EB;
+  background: linear-gradient(145deg, var(--neu-accent), var(--neu-accent-dark));
   color: #ffffff;
+  box-shadow: -4px -4px 9px var(--neu-hi), 5px 5px 12px var(--neu-lo);
 }
 .entity-toolbox .tb-btn.tb-primary:hover {
-  background: #1D4ED8;
-  border-color: #1D4ED8;
   color: #ffffff;
+  transform: translateY(-1px);
+  box-shadow: -5px -5px 11px var(--neu-hi), 6px 6px 15px var(--neu-lo);
 }
-.entity-toolbox .tb-btn.tb-primary:active {
-  background: #1E40AF;
-  border-color: #1E40AF;
+.entity-toolbox .tb-btn.tb-primary:active,
+.entity-toolbox .tb-btn.tb-primary.tb-active {
+  box-shadow: inset 3px 3px 8px rgba(0, 0, 0, 0.38), inset -2px -2px 6px rgba(255, 255, 255, 0.12);
 }
+/* Danger (Delete): red pressed/active + hover */
 .entity-toolbox .tb-btn.tb-danger:hover {
-  background: #FEE2E2;
-  border-color: #FCA5A5;
-  color: #DC2626;
+  color: var(--neu-danger);
 }
-.entity-toolbox .tb-btn.tb-danger:active {
-  background: #FECACA;
-  border-color: #F87171;
+.entity-toolbox .tb-btn.tb-danger:active,
+.entity-toolbox .tb-btn.tb-danger.tb-active {
+  background: var(--neu-danger);
+  color: #ffffff;
+  border-color: var(--neu-danger);
 }
+.entity-toolbox .tb-btn.tb-danger.tb-active svg { color: #ffffff; }
 
 .entity-toolbox .tb-divider {
   width: 1px;
   align-self: stretch;
-  background: #CBD5E1;
-  margin: 2px 6px;
+  background: var(--neu-divider);
+  margin: 2px 4px;
+  flex: 0 0 auto;
 }
 
 .entity-toolbox .tb-selected {
   display: inline-flex;
   align-items: center;
   gap: 6px;
+  flex: 0 0 auto;
   margin-left: auto;
-  background: #EFF6FF;
-  color: #1D4ED8;
+  background: var(--neu-btn);
+  color: var(--neu-accent-dark);
   font-size: 12px;
   font-weight: 700;
-  padding: 6px 10px;
+  padding: 7px 12px;
   border-radius: 999px;
-  border: 1px solid #BFDBFE;
+  box-shadow: inset 2px 2px 5px var(--neu-lo), inset -2px -2px 5px var(--neu-hi);
 }
 .entity-toolbox .tb-clear {
   background: transparent;
   border: none;
-  color: #1D4ED8;
+  color: var(--neu-accent-dark);
   font-size: 15px;
   line-height: 1;
   cursor: pointer;
   padding: 0 2px;
 }
 .entity-toolbox .tb-clear:hover {
-  color: #DC2626;
+  color: var(--neu-danger);
 }
 
 /* Selection checkbox column in data tables */
@@ -3875,11 +3896,22 @@
 }
 
 @media (max-width: 720px) {
+  .entity-toolbox {
+    gap: 8px;
+    padding: 10px;
+    border-radius: 12px;
+  }
   .entity-toolbox .tb-btn span {
     display: none;
   }
+  /* icon-only tiles on mobile: don't stretch, keep tappable size */
   .entity-toolbox .tb-btn {
-    padding: 9px 10px;
+    flex: 0 1 auto;
+    min-width: 44px;
+    padding: 10px 12px;
+  }
+  .entity-toolbox .tb-selected {
+    margin-left: 0;
   }
 }
 

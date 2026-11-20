@@ -71,6 +71,16 @@ export function EntityToolbox<T>({
   const { addToast } = useERP();
   const fileInputRef = useRef<HTMLInputElement>(null);
   const [confirmDelete, setConfirmDelete] = useState(false);
+  // Tracks the last-pressed tool so it stays visibly "active" (neumorphic
+  // pressed-in accent) until another tool is pressed.
+  const [activeTool, setActiveTool] = useState<string | null>(null);
+
+  const run = (name: string, fn: () => void) => {
+    setActiveTool(name);
+    fn();
+  };
+  const cls = (name: string, extra = '') =>
+    `tb-btn ${extra} ${activeTool === name ? 'tb-active' : ''}`.replace(/\s+/g, ' ').trim();
 
   const headers = columns.map(c => c.header);
   const selectedRows = rows.filter(r => selectedIds.includes(getId(r)));
@@ -230,46 +240,46 @@ export function EntityToolbox<T>({
 
   return (
     <div className="entity-toolbox" role="toolbar" aria-label={`${entityLabel} actions`}>
-      <button className="tb-btn tb-primary" onClick={handleNew} title={`Add new ${entityLabel.toLowerCase()}`}>
+      <button className={cls('new', 'tb-primary')} onClick={() => run('new', handleNew)} title={`Add new ${entityLabel.toLowerCase()}`}>
         <Plus size={15} /> <span>New</span>
       </button>
-      <button className="tb-btn" onClick={handleEdit} title="Edit selected record">
+      <button className={cls('edit')} onClick={() => run('edit', handleEdit)} title="Edit selected record">
         <Pencil size={15} /> <span>Edit</span>
       </button>
-      <button className="tb-btn" onClick={handleDuplicate} title="Duplicate selected record(s)">
+      <button className={cls('duplicate')} onClick={() => run('duplicate', handleDuplicate)} title="Duplicate selected record(s)">
         <CopyPlus size={15} /> <span>Duplicate</span>
       </button>
-      <button className="tb-btn tb-danger" onClick={handleDeleteClick} title="Delete selected record(s)">
+      <button className={cls('delete', 'tb-danger')} onClick={() => run('delete', handleDeleteClick)} title="Delete selected record(s)">
         <Trash2 size={15} /> <span>Delete</span>
       </button>
 
       <span className="tb-divider" />
 
-      <button className="tb-btn" onClick={handleCopy} title="Copy selected row(s) to clipboard">
+      <button className={cls('copy')} onClick={() => run('copy', handleCopy)} title="Copy selected row(s) to clipboard">
         <Copy size={15} /> <span>Copy</span>
       </button>
-      <button className="tb-btn" onClick={handlePaste} title="Paste rows from clipboard">
+      <button className={cls('paste')} onClick={() => run('paste', handlePaste)} title="Paste rows from clipboard">
         <ClipboardPaste size={15} /> <span>Paste</span>
       </button>
 
       <span className="tb-divider" />
 
-      <button className="tb-btn" onClick={handleImportClick} title="Import records from CSV">
+      <button className={cls('import')} onClick={() => run('import', handleImportClick)} title="Import records from CSV">
         <Upload size={15} /> <span>Import</span>
       </button>
-      <button className="tb-btn" onClick={handleTemplate} title="Download a blank import template">
+      <button className={cls('template')} onClick={() => run('template', handleTemplate)} title="Download a blank import template">
         <FileSpreadsheet size={15} /> <span>Template</span>
       </button>
-      <button className="tb-btn" onClick={handleExport} title="Export records to CSV">
+      <button className={cls('export')} onClick={() => run('export', handleExport)} title="Export records to CSV">
         <Download size={15} /> <span>Export</span>
       </button>
-      <button className="tb-btn" onClick={handlePrint} title="Print records">
+      <button className={cls('print')} onClick={() => run('print', handlePrint)} title="Print records">
         <Printer size={15} /> <span>Print</span>
       </button>
 
       <span className="tb-divider" />
 
-      <button className="tb-btn" onClick={handleRefresh} title="Reload the list">
+      <button className={cls('refresh')} onClick={() => run('refresh', handleRefresh)} title="Reload the list">
         <RefreshCw size={15} /> <span>Refresh</span>
       </button>
 

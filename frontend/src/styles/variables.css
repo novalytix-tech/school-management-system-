@@ -115,4 +115,52 @@
   --font-size-xl: 1.2rem;
   --font-size-2xl: 1.45rem;
   --font-size-3xl: 1.85rem;
+
+  /* Neumorphism — raised 3D tool buttons (Task 8 toolbar).
+     Tray and button share a base tint so the dual soft shadows read as depth. */
+  --neu-tray: #e7ecf3;
+  --neu-btn: #eef2f8;
+  --neu-btn-hover: #f4f7fc;
+  --neu-text: #334155;
+  --neu-text-muted: #64748b;
+  --neu-hi: #ffffff;          /* top-left highlight */
+  --neu-lo: #c5cedd;          /* bottom-right shadow */
+  --neu-accent: #2563eb;
+  --neu-accent-dark: #1d4ed8;
+  --neu-danger: #dc2626;
+  --neu-divider: #cdd6e3;
+  --neu-focus: #2563eb;
+}
+
+/* OS-level dark mode: the toolbar adapts even though the app has no global dark
+   theme yet. Guarded so a future [data-theme="light"] opt-out still wins. */
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --neu-tray: #232d3c;
+    --neu-btn: #2a3547;
+    --neu-btn-hover: #324055;
+    --neu-text: #dbe4f0;
+    --neu-text-muted: #94a3b8;
+    --neu-hi: #3a4961;          /* subtle top-left light */
+    --neu-lo: #151c26;          /* deep bottom-right shadow */
+    --neu-accent: #3b82f6;
+    --neu-accent-dark: #2563eb;
+    --neu-danger: #f87171;
+    --neu-divider: #3a4860;
+    --neu-focus: #60a5fa;
+  }
+}
+:root[data-theme="dark"] {
+  --neu-tray: #232d3c;
+  --neu-btn: #2a3547;
+  --neu-btn-hover: #324055;
+  --neu-text: #dbe4f0;
+  --neu-text-muted: #94a3b8;
+  --neu-hi: #3a4961;
+  --neu-lo: #151c26;
+  --neu-accent: #3b82f6;
+  --neu-accent-dark: #2563eb;
+  --neu-danger: #f87171;
+  --neu-divider: #3a4860;
+  --neu-focus: #60a5fa;
 }
