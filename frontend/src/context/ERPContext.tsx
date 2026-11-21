@@ -19,6 +19,7 @@ import { studentService } from '../services/studentService';
 import { teacherService } from '../services/teacherService';
 import { downloadJSONBackup } from '../utils/export';
 import { httpClient } from '../services/api/httpClient';
+import { syncEngine, CLIENT_ID as SYNC_CLIENT_ID, REMOTE_UPDATE_EVENT } from '../services/syncEngine';
 
 export interface ToastMessage {
   id: string;
@@ -34,6 +35,8 @@ interface ERPContextType {
   login: (role: UserRole, customUser?: User) => void;
   logout: () => void;
   switchRole: (role: UserRole) => void;
+  /** Bumps when data from the server (another device) lands; pages re-read on it. */
+  remoteDataVersion: number;
   schoolSettings: SchoolSettings;
   updateSchoolSettings: (updates: Partial<SchoolSettings>) => void;
   refreshStore: () => void;
@@ -111,7 +114,7 @@ export const ERPProvider: React.FC<{ children: React.ReactNode }> = ({ children 
 
   // Hydrate from PostgreSQL 18 backend on load
   useEffect(() => {
-    ERPStorage.syncFromBackend();
+    ERPStorage.startServerSync();
   }, []);
 
   // Listen to cross-service or custom storage updates
@@ -154,6 +157,8 @@ export const ERPProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     if (httpClient.getToken()) {
       httpClient.post('/auth/logout').catch(() => undefined);
     }
+    // Before the token is dropped: pushes pending changes, then forgets them.
+    syncEngine.stop();
     httpClient.setToken(null);
     realtimeService.disconnect();
     setIsAuthenticated(false);
@@ -161,6 +166,44 @@ export const ERPProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     localStorage.setItem('nts_erp_authenticated', 'false');
     localStorage.removeItem('nts_erp_token');
     localStorage.removeItem('nts_erp_current_user');
+  }, []);
+
+  // Pages copy store data into local state when they open, so data arriving
+  // from another device only shows once the page re-reads it. The layout
+  // re-mounts the current page on remoteDataVersion — but never while someone is
+  // typing in a field or has a dialog open (that would discard their input);
+  // it waits until they're done.
+  const [remoteDataVersion, setRemoteDataVersion] = useState(0);
+  useEffect(() => {
+    let pending = false;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const isUserBusy = () => {
+      const el = document.activeElement as HTMLElement | null;
+      const editing = !!el && (['INPUT', 'TEXTAREA', 'SELECT'].includes(el.tagName) || el.isContentEditable);
+      const dialogOpen = !!document.querySelector(
+        '[role="dialog"], [aria-modal="true"], [class*="modal-overlay"], [class*="modal-backdrop"], [class*="drawer-overlay"]'
+      );
+      return editing || dialogOpen;
+    };
+    const tryApply = () => {
+      if (!pending) return;
+      if (isUserBusy()) {
+        timer = setTimeout(tryApply, 1000);
+        return;
+      }
+      pending = false;
+      setRemoteDataVersion(v => v + 1);
+    };
+    const onRemoteUpdate = () => {
+      pending = true;
+      if (timer) clearTimeout(timer);
+      tryApply();
+    };
+    window.addEventListener(REMOTE_UPDATE_EVENT, onRemoteUpdate);
+    return () => {
+      window.removeEventListener(REMOTE_UPDATE_EVENT, onRemoteUpdate);
+      if (timer) clearTimeout(timer);
+    };
   }, []);
 
   // httpClient fires this when the refresh token is rejected: the session is
@@ -338,6 +381,9 @@ export const ERPProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     const off = realtimeService.onEntityChange(change => {
       if (change.entity === 'student') {
         studentService.applyRealtimeChange(change, instId);
+      } else if (change.entity === 'sync' && change.data?.client !== SYNC_CLIENT_ID) {
+        // Another device (possibly the same user) saved: pull just what changed.
+        void syncEngine.pull();
       }
     });
     return () => { off(); };
@@ -397,6 +443,7 @@ export const ERPProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         login,
         logout,
         switchRole,
+        remoteDataVersion,
         schoolSettings,
         updateSchoolSettings,
         refreshStore,

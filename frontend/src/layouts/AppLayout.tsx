@@ -13,7 +13,7 @@ import { ToastContainer } from '../components/common/ToastContainer';
 import { useERP } from '../context/ERPContext';
 
 export const AppLayout: React.FC = () => {
-  const { isAuthenticated } = useERP();
+  const { isAuthenticated, remoteDataVersion } = useERP();
   const [collapsed, setCollapsed] = useState(false);
   const [mobileOpen, setMobileOpen] = useState(false);
 
@@ -35,7 +35,10 @@ export const AppLayout: React.FC = () => {
         <Topbar onOpenMobileSidebar={() => setMobileOpen(true)} />
 
         <main className="app-main-content">
-          <Outlet />
+          {/* Re-mounting on server data makes every page re-read the store. */}
+          <React.Fragment key={remoteDataVersion}>
+            <Outlet />
+          </React.Fragment>
         </main>
 
         <Footer />

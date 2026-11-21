@@ -17,6 +17,16 @@ export interface EntityChange {
 
 type ChangeHandler = (change: EntityChange) => void;
 
+/** Origin of the backend for the socket, or undefined for this page's origin. */
+export function socketOrigin(apiUrl: string | undefined = import.meta.env.VITE_API_URL): string | undefined {
+  if (!apiUrl) return undefined;
+  try {
+    return new URL(apiUrl, typeof window !== 'undefined' ? window.location.href : undefined).origin;
+  } catch {
+    return undefined;
+  }
+}
+
 class RealtimeService {
   private socket: Socket | null = null;
   private institutionId: string | null = null;
@@ -55,13 +65,13 @@ class RealtimeService {
       this.refreshListenerAttached = true;
     }
 
-    // Dev: connect straight to the Flask backend (:5000, CORS "*"); prod: same
-    // origin. Long-polling only — the threading/Werkzeug backend has no WebSocket
-    // transport, and polling delivers events fine. Reconnection is capped so a
-    // backend that is down (or incompatible) can never storm the client.
-    const url = import.meta.env.DEV
-      ? `${window.location.protocol}//${window.location.hostname}:5000`
-      : undefined;
+    // Same host as the REST API: VITE_API_URL's origin when the API lives on
+    // another host (e.g. Vercel frontend + Render backend), otherwise this origin
+    // (the dev server proxies /socket.io). Long-polling only — the threading/
+    // Werkzeug backend has no WebSocket transport, and polling delivers events
+    // fine. Reconnection is capped so a backend that is down (or incompatible)
+    // can never storm the client.
+    const url = socketOrigin();
     const socket = io(url, {
       // Callback form: every (re)connection attempt sends the CURRENT token.
       auth: cb => cb({ token: httpClient.getToken() }),

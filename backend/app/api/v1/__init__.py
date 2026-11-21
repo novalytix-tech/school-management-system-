@@ -16,6 +16,7 @@ from app.api.v1.question_papers import question_papers_bp
 from app.api.v1.staff import staff_bp
 from app.api.v1.institutions import institutions_bp
 from app.api.v1.sync import sync_bp
+from app.api.v1.sync_records import sync_records_bp
 from app.api.v1.users import users_bp
 from app.api.v1.payments import payments_bp
 
@@ -38,6 +39,7 @@ api_v1_bp.register_blueprint(question_papers_bp)
 api_v1_bp.register_blueprint(staff_bp)
 api_v1_bp.register_blueprint(institutions_bp)
 api_v1_bp.register_blueprint(sync_bp)
+api_v1_bp.register_blueprint(sync_records_bp)
 api_v1_bp.register_blueprint(users_bp)
 api_v1_bp.register_blueprint(payments_bp)
 

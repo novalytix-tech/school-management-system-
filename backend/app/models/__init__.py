@@ -35,6 +35,7 @@ from app.models.marketing import MarketingCampaign, MarketingLead, MarketingActi
 from app.models.award import AcademicAward, StudentAward
 from app.models.notification import Notification, NotificationRecipient
 from app.models.audit import AuditLog
+from app.models.sync_record import SyncRecord
 
 __all__ = [
     "BaseModel",
@@ -129,5 +130,6 @@ __all__ = [
     "Notification",
     "NotificationRecipient",
     "AuditLog",
+    "SyncRecord",
 ]
 

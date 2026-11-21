@@ -8,8 +8,15 @@ import { INITIAL_ERP_DATA } from '../data/seedData';
 import { PERIOD_SLOTS } from '../utils/timetableConstants';
 import { schoolMigrationService } from './schoolMigrationService';
 import { httpClient } from './api/httpClient';
+import { syncEngine } from './syncEngine';
 
 const STORAGE_KEY = 'nts_novalytix_school_erp_store_v1';
+
+/** Add server items whose id isn't present locally; local (synced) copies win. */
+function mergeById<T extends { id: string }>(local: T[] | undefined, server: T[]): T[] {
+  const existing = new Set((local || []).map(item => item.id));
+  return [...(local || []), ...server.filter(item => !existing.has(item.id))];
+}
 
 export class ERPStorage {
   private static cachedData: ERPDataStore | null = null;
@@ -297,6 +304,7 @@ export class ERPStorage {
       }
 
       this.cachedData = parsed;
+      syncEngine.captureBaseline(parsed);
       return parsed;
     } catch (err) {
       console.error('Failed to read from localStorage, using seed data:', err);
@@ -309,21 +317,34 @@ export class ERPStorage {
   /**
    * Persists the store locally and notifies listeners.
    *
-   * `_syncBackend` is kept for signature compatibility only. set() used to POST
-   * the whole student list (demo seed included) to /sync/store on every local
-   * write, polluting the real school's database. Each service now persists its
-   * own mutations through its dedicated endpoint instead.
+   * With `syncBackend` (the default) the items that changed are queued for the
+   * server by syncEngine — only real edits, item by item, never the whole store.
+   * Pass false for data that just came from the server, so it isn't echoed back.
    */
-  public static set(data: ERPDataStore, _syncBackend: boolean = true): void {
+  public static set(data: ERPDataStore, syncBackend: boolean = true): void {
     try {
       this.cachedData = data;
       localStorage.setItem(STORAGE_KEY, JSON.stringify(data));
+      if (syncBackend) {
+        syncEngine.recordChanges(data);
+      } else {
+        syncEngine.captureBaseline(data);
+      }
       // Dispatch custom event so reactive hooks/listeners can update immediately
       window.dispatchEvent(new CustomEvent('nts_erp_storage_updated', { detail: data }));
-
     } catch (err) {
       console.error('Failed to save ERP store to localStorage:', err);
     }
+  }
+
+  /**
+   * Full server sync for a signed-in session: every synced collection first
+   * (syncEngine), then the relational data (students, server teachers/classes).
+   */
+  public static async startServerSync(): Promise<boolean> {
+    if (!httpClient.getToken()) return false;
+    await syncEngine.start();
+    return this.syncFromBackend();
   }
 
   public static async syncFromBackend(): Promise<boolean> {
@@ -334,13 +355,13 @@ export class ERPStorage {
       const res = await httpClient.get('/sync/store');
       if (res.success && res.data) {
         const current = this.get();
-        // Demo-first: the curated local seed (students / teachers / classes with
-        // stable ids like stud-1, teach-1, cls-10a) is the source of truth so the
-        // personas stay correlated — e.g. the student persona = Shivam Giri and the
-        // parent Shakti Singh keeps Shivam Giri as their ward. We only hydrate these
-        // core collections from the backend when the local store is genuinely empty,
-        // so a live backend can never clobber the curated identities.
-        if ((!current.students || current.students.length === 0) && res.data.students && res.data.students.length > 0) {
+        // With a backend session the server is the source of truth: students
+        // always come from the database (they are created/edited/deleted through
+        // /students), so every device shows the same roster. Teachers and classes
+        // that exist server-side are merged in by id without overwriting edits
+        // that were synced through syncEngine. (Demo mode never gets here: it
+        // has no token.)
+        if (Array.isArray(res.data.students)) {
           current.students = res.data.students.map((st: any) => ({
             ...st,
             className: st.className || st.grade || 'Class 10',
@@ -349,24 +370,21 @@ export class ERPStorage {
             busStop: st.busStop || 'Civil Lines Metro',
           }));
         }
-        if ((!current.classes || current.classes.length === 0) && res.data.classes && res.data.classes.length > 0) {
-          current.classes = res.data.classes.map((c: any) => ({
+        if (Array.isArray(res.data.classes) && res.data.classes.length > 0) {
+          current.classes = mergeById(current.classes, res.data.classes.map((c: any) => ({
             ...c,
             classTeacherName: c.classTeacherName || c.classTeacher || 'Assigned Faculty',
             subjects: c.subjects && c.subjects.length > 0 ? c.subjects : ['Mathematics', 'Science', 'English', 'Social Studies'],
-          }));
+          })));
         }
-        if ((!current.teachers || current.teachers.length === 0) && res.data.teachers && res.data.teachers.length > 0) {
-          current.teachers = res.data.teachers.map((t: any) => ({
+        if (Array.isArray(res.data.teachers) && res.data.teachers.length > 0) {
+          current.teachers = mergeById(current.teachers, res.data.teachers.map((t: any) => ({
             ...t,
             staffId: t.staffId || t.employeeId || 'STAFF-101',
             specialization: t.specialization || t.department || 'Academics',
-            assignedClasses: (t.assignedClasses && t.assignedClasses.length > 0)
-              ? t.assignedClasses
-              : [
-                  { classId: current.classes[0]?.id || 'cls-10a', className: 'Class 10', section: 'A', subject: 'Mathematics' },
-                ],
-          }));
+            // No guessed fallback class: an unassigned teacher has no classes.
+            assignedClasses: Array.isArray(t.assignedClasses) ? t.assignedClasses : [],
+          })));
         }
         if (res.data.institutions && res.data.institutions.length > 0) {
           const backendInsts = res.data.institutions.map((inst: any) => ({
@@ -435,3 +453,7 @@ export class ERPStorage {
   }
 }
 
+syncEngine.attach({
+  get: () => ERPStorage.get(),
+  setFromServer: data => ERPStorage.set(data, false),
+});

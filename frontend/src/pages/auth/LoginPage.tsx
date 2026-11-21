@@ -188,7 +188,6 @@ export const LoginPage: React.FC = () => {
           httpClient.setToken(res.data.access_token);
           localStorage.setItem('nts_erp_token', res.data.access_token);
         }
-        ERPStorage.syncFromBackend().catch(err => console.debug('Sync background notice:', err));
 
         const role = (res.data.user.roles?.[0] as UserRole) || 'school_admin';
         const demoUser = DEMO_USERS[role] || DEMO_USERS.school_admin;
@@ -205,6 +204,9 @@ export const LoginPage: React.FC = () => {
           // someone else's record.
           referenceId: res.data.user.reference_id || undefined,
         });
+        // After login() so the sync knows who is signed in (an admin's first
+        // sync uploads data entered on this device).
+        ERPStorage.startServerSync().catch(err => console.debug('Sync background notice:', err));
 
         // Check if mandatory first-time password change is required
         if (res.data.user.must_change_password) {

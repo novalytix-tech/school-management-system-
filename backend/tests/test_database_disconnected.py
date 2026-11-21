@@ -24,7 +24,7 @@ PASSWORDS = {
 
 # Every (rule, method) pair registered. Bump this when routes are added.
 # 85 baseline + GET /guardians (Task 2) + GET /students/<id>/history (Task 3) = 87.
-EXPECTED_ROUTE_COUNT = 89
+EXPECTED_ROUTE_COUNT = 91
 
 
 @pytest.fixture(scope="module")
