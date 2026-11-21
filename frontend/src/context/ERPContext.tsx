@@ -18,6 +18,7 @@ import { feeService } from '../services/feeService';
 import { studentService } from '../services/studentService';
 import { teacherService } from '../services/teacherService';
 import { downloadJSONBackup } from '../utils/export';
+import { withoutBorrowedDemoPhoto } from '../utils/avatar';
 import { httpClient } from '../services/api/httpClient';
 import { syncEngine, CLIENT_ID as SYNC_CLIENT_ID, REMOTE_UPDATE_EVENT } from '../services/syncEngine';
 
@@ -94,7 +95,7 @@ export const ERPProvider: React.FC<{ children: React.ReactNode }> = ({ children 
           if (parsed.role !== 'super_admin' && !parsed.institutionId) {
             parsed.institutionId = 'inst-1';
           }
-          return parsed;
+          return withoutBorrowedDemoPhoto(parsed);
         }
       } catch {}
     }
@@ -136,9 +137,10 @@ export const ERPProvider: React.FC<{ children: React.ReactNode }> = ({ children 
           ...customUser,
           role,
           institutionId: customUser.institutionId || (role === 'super_admin' ? undefined : 'inst-1'),
-          // A real account carries its own reference id (or none); only the
-          // demo personas use the preset's id.
+          // A real account carries its own reference id and photo (or none);
+          // only the demo personas use the preset's.
           referenceId: customUser.referenceId,
+          photoUrl: customUser.photoUrl,
         }
       : demoUser;
 

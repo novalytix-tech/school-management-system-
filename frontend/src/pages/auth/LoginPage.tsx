@@ -44,6 +44,11 @@ interface RolePreset {
  * In a production build this constant is false and the bundler drops the whole
  * preset list, so no password ever ships to the browser.
  */
+/** "Ananya Sharma" -> "AS" (used where no picture is available). */
+function initialsOf(name: string): string {
+  return name.split(/s+/).filter(Boolean).slice(0, 2).map(part => part[0]!.toUpperCase()).join('');
+}
+
 const DEMO_LOGIN_ENABLED = import.meta.env.DEV || import.meta.env.VITE_ENABLE_DEMO_LOGIN === 'true';
 
 const ROLES: RolePreset[] = !DEMO_LOGIN_ENABLED ? [] : [
@@ -185,6 +190,7 @@ export const LoginPage: React.FC = () => {
           full_name?: string;
           institution_id?: string;
           reference_id?: string | null;
+          avatar_url?: string | null;
           must_change_password?: boolean;
         };
       }>('/auth/login', {
@@ -213,6 +219,10 @@ export const LoginPage: React.FC = () => {
           // borrow the demo persona's id: that maps a real account onto
           // someone else's record.
           referenceId: res.data.user.reference_id || undefined,
+          // The account's own picture (or none, so the avatar resolver picks this
+          // person's own portrait) — never the demo persona's photo or initials.
+          photoUrl: res.data.user.avatar_url || undefined,
+          avatar: initialsOf(res.data.user.full_name || res.data.user.username || ''),
         });
         // After login() so the sync knows who is signed in (an admin's first
         // sync uploads data entered on this device).

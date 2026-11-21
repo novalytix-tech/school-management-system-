@@ -7,7 +7,22 @@
 
 import { studentService } from '../services/studentService';
 import { teacherService } from '../services/teacherService';
+import { DEMO_USERS } from '../data/seedData';
 import type { User, UserRole } from '../types';
+
+/**
+ * Real accounts used to be stored with the demo persona's photo for their role
+ * (e.g. teacher Ananya Sharma showing Sharad's picture). Drop a demo persona's
+ * photo from any user who isn't that persona, so their own portrait is shown.
+ */
+export function withoutBorrowedDemoPhoto<T extends Partial<User>>(user: T): T {
+  if (!user.photoUrl) return user;
+  const persona = Object.values(DEMO_USERS).find(d => d.photoUrl === user.photoUrl);
+  if (persona && persona.id !== user.id) {
+    return { ...user, photoUrl: undefined };
+  }
+  return user;
+}
 
 /**
  * Resolves an avatar image path for any logged-in user:
