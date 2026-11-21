@@ -42,8 +42,19 @@ class DatabaseUnavailableError(APIException):
 def register_error_handlers(app):
     """Register application-wide error handlers returning standard JSON envelopes."""
 
+    def _rollback():
+        try:
+            from app.extensions import db
+            db.session.rollback()
+        except Exception:
+            pass
+
+
     @app.errorhandler(APIException)
     def handle_api_exception(error):
+        # A rejected request must not leave half-applied changes in the session
+        # for a later commit to pick up.
+        _rollback()
         return jsonify(error.to_dict()), error.status_code
 
     @app.errorhandler(ValidationError)
@@ -127,13 +138,6 @@ def register_error_handlers(app):
                 "message": "An unexpected error occurred. Please contact system administration.",
             }
         }), 500
-
-    def _rollback():
-        try:
-            from app.extensions import db
-            db.session.rollback()
-        except Exception:
-            pass
 
     @app.errorhandler(IntegrityError)
     def handle_integrity_error(error):

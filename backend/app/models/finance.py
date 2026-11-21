@@ -3,9 +3,10 @@ from datetime import date, datetime, timezone
 from decimal import Decimal
 from typing import Optional, List
 from sqlalchemy import (
-    String, Text, Numeric, Boolean, Date, DateTime, UniqueConstraint, CheckConstraint, ForeignKey, func
+    String, Text, Numeric, Boolean, Date, DateTime, Integer, UniqueConstraint, CheckConstraint, ForeignKey,
+    Index, func
 )
-from sqlalchemy.dialects.postgresql import UUID
+from sqlalchemy.dialects.postgresql import UUID, JSONB
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 from app.models.base import BaseModel, TenantModel
 
@@ -85,6 +86,14 @@ class FeeInvoice(TenantModel):
     total_amount: Mapped[Decimal] = mapped_column(Numeric(12, 2), nullable=False)
     paid_amount: Mapped[Decimal] = mapped_column(Numeric(12, 2), default=Decimal("0.00"), nullable=False)
     balance_amount: Mapped[Decimal] = mapped_column(Numeric(12, 2), nullable=False)
+    # total = subtotal - discount_amount + fine_amount;
+    # balance = total - paid_amount + refunded_amount (a refund re-opens the balance).
+    fine_amount: Mapped[Decimal] = mapped_column(
+        Numeric(12, 2), default=Decimal("0.00"), server_default="0", nullable=False
+    )
+    refunded_amount: Mapped[Decimal] = mapped_column(
+        Numeric(12, 2), default=Decimal("0.00"), server_default="0", nullable=False
+    )
     status: Mapped[str] = mapped_column(String(20), default="UNPAID", nullable=False)
     issue_date: Mapped[date] = mapped_column(Date, default=date.today, nullable=False)
     due_date: Mapped[date] = mapped_column(Date, nullable=False)
@@ -97,11 +106,23 @@ class FeeInvoice(TenantModel):
     payments: Mapped[List["FeePayment"]] = relationship(
         "FeePayment", back_populates="invoice", cascade="all, delete-orphan"
     )
+    adjustments: Mapped[List["FeeInvoiceAdjustment"]] = relationship(
+        "FeeInvoiceAdjustment", back_populates="invoice", cascade="all, delete-orphan",
+        order_by="FeeInvoiceAdjustment.created_at",
+    )
+    installments: Mapped[List["FeeInstallment"]] = relationship(
+        "FeeInstallment", back_populates="invoice", cascade="all, delete-orphan",
+        order_by="(FeeInstallment.due_date, FeeInstallment.installment_number)",
+    )
 
     __table_args__ = (
         UniqueConstraint("institution_id", "invoice_number", name="uq_institution_invoice_number"),
-        # Mandatory constraint: Payment cannot exceed remaining invoice balance without approved adjustment
-        CheckConstraint("paid_amount <= total_amount + adjustment_amount", name="chk_invoice_paid_not_exceed_total"),
+        # Payment cannot exceed the invoice total (refunded money may be paid again).
+        CheckConstraint("paid_amount <= total_amount + adjustment_amount + refunded_amount",
+                        name="chk_invoice_paid_not_exceed_total"),
+        CheckConstraint("refunded_amount >= 0 AND refunded_amount <= paid_amount",
+                        name="chk_invoice_refunded_range"),
+        CheckConstraint("fine_amount >= 0", name="chk_invoice_fine_non_negative"),
         CheckConstraint("paid_amount >= 0", name="chk_invoice_paid_non_negative"),
         CheckConstraint("total_amount >= 0", name="chk_invoice_total_non_negative"),
         CheckConstraint("discount_amount >= 0", name="chk_invoice_discount_non_negative"),
@@ -151,12 +172,28 @@ class FeePayment(BaseModel):
         nullable=True,
     )
     receipt_url: Mapped[Optional[str]] = mapped_column(String(500), nullable=True)
+    refunded_amount: Mapped[Decimal] = mapped_column(
+        Numeric(12, 2), default=Decimal("0.00"), server_default="0", nullable=False
+    )
+    is_test: Mapped[bool] = mapped_column(Boolean, default=False, server_default="false", nullable=False)
+    # Checkout attempt that produced this payment (NULL for offline payments).
+    order_id: Mapped[Optional[uuid.UUID]] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("payment_orders.id", ondelete="SET NULL", use_alter=True, name="fk_fee_payments_order_id"),
+        nullable=True,
+        index=True,
+    )
 
     invoice: Mapped["FeeInvoice"] = relationship("FeeInvoice", back_populates="payments")
     recorder: Mapped[Optional["User"]] = relationship("User")
+    refunds: Mapped[List["FeeRefund"]] = relationship(
+        "FeeRefund", back_populates="payment", order_by="FeeRefund.created_at"
+    )
+    receipt: Mapped[Optional["FeeReceipt"]] = relationship("FeeReceipt", back_populates="payment", uselist=False)
 
     __table_args__ = (
         CheckConstraint("amount > 0", name="chk_payment_positive_amount"),
+        CheckConstraint("refunded_amount >= 0 AND refunded_amount <= amount", name="chk_payment_refunded_range"),
     )
 
 
@@ -205,3 +242,151 @@ class PaymentGatewayWebhook(BaseModel):
         nullable=False,
     )
 
+
+class FeeInvoiceAdjustment(BaseModel):
+    """Discount / scholarship / waiver (reduce the total) or late fine (increases it)."""
+    __tablename__ = "fee_invoice_adjustments"
+
+    KINDS = ("DISCOUNT", "SCHOLARSHIP", "WAIVER", "LATE_FINE")
+    REDUCING_KINDS = ("DISCOUNT", "SCHOLARSHIP", "WAIVER")
+
+    invoice_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("fee_invoices.id", ondelete="CASCADE"), nullable=False, index=True,
+    )
+    kind: Mapped[str] = mapped_column(String(20), nullable=False)
+    label: Mapped[str] = mapped_column(String(150), nullable=False)
+    amount: Mapped[Decimal] = mapped_column(Numeric(12, 2), nullable=False)
+    created_by: Mapped[Optional[uuid.UUID]] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("users.id", ondelete="SET NULL"), nullable=True,
+    )
+
+    invoice: Mapped["FeeInvoice"] = relationship("FeeInvoice", back_populates="adjustments")
+
+    __table_args__ = (
+        CheckConstraint("amount > 0", name="chk_adjustment_positive_amount"),
+        CheckConstraint("kind IN ('DISCOUNT', 'SCHOLARSHIP', 'WAIVER', 'LATE_FINE')", name="chk_adjustment_kind"),
+    )
+
+
+class FeeInstallment(BaseModel):
+    """One installment of an invoice; payments are allocated in due-date order."""
+    __tablename__ = "fee_installments"
+
+    invoice_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("fee_invoices.id", ondelete="CASCADE"), nullable=False, index=True,
+    )
+    installment_number: Mapped[int] = mapped_column(Integer, nullable=False)
+    label: Mapped[str] = mapped_column(String(100), nullable=False)
+    amount: Mapped[Decimal] = mapped_column(Numeric(12, 2), nullable=False)
+    due_date: Mapped[date] = mapped_column(Date, nullable=False)
+    paid_amount: Mapped[Decimal] = mapped_column(
+        Numeric(12, 2), default=Decimal("0.00"), server_default="0", nullable=False
+    )
+    status: Mapped[str] = mapped_column(String(20), default="PENDING", server_default="PENDING", nullable=False)
+
+    invoice: Mapped["FeeInvoice"] = relationship("FeeInvoice", back_populates="installments")
+
+    __table_args__ = (
+        UniqueConstraint("invoice_id", "installment_number", name="uq_installment_number"),
+        CheckConstraint("amount >= 0", name="chk_installment_amount_non_negative"),
+        CheckConstraint("paid_amount >= 0 AND paid_amount <= amount", name="chk_installment_paid_range"),
+    )
+
+
+class PaymentOrder(TenantModel):
+    """One online checkout attempt (Razorpay or mock) and its lifecycle."""
+    __tablename__ = "payment_orders"
+
+    STATUSES = ("CREATED", "PENDING", "SUCCEEDED", "FAILED", "CANCELLED", "EXPIRED", "NEEDS_REVIEW")
+
+    invoice_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("fee_invoices.id", ondelete="RESTRICT"), nullable=False, index=True,
+    )
+    student_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("students.id", ondelete="RESTRICT"), nullable=False, index=True,
+    )
+    initiated_by: Mapped[Optional[uuid.UUID]] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("users.id", ondelete="SET NULL"), nullable=True, index=True,
+    )
+    provider: Mapped[str] = mapped_column(String(20), nullable=False)  # RAZORPAY, MOCK
+    is_test: Mapped[bool] = mapped_column(Boolean, default=False, server_default="false", nullable=False)
+    gateway_order_id: Mapped[Optional[str]] = mapped_column(String(64), unique=True, nullable=True)
+    gateway_payment_id: Mapped[Optional[str]] = mapped_column(String(64), unique=True, nullable=True)
+    amount: Mapped[Decimal] = mapped_column(Numeric(12, 2), nullable=False)
+    currency: Mapped[str] = mapped_column(String(3), default="INR", server_default="INR", nullable=False)
+    status: Mapped[str] = mapped_column(String(20), default="CREATED", server_default="CREATED", nullable=False)
+    failure_reason: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
+    idempotency_key: Mapped[str] = mapped_column(String(128), nullable=False)
+    pending_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
+    succeeded_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
+    failed_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
+    cancelled_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
+    payment_id: Mapped[Optional[uuid.UUID]] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("fee_payments.id", ondelete="SET NULL"), nullable=True, index=True,
+    )
+
+    invoice: Mapped["FeeInvoice"] = relationship("FeeInvoice")
+    student: Mapped["Student"] = relationship("Student")
+    payment: Mapped[Optional["FeePayment"]] = relationship("FeePayment", foreign_keys=[payment_id])
+
+    __table_args__ = (
+        UniqueConstraint("initiated_by", "idempotency_key", name="uq_payment_order_idempotency"),
+        CheckConstraint("amount > 0", name="chk_payment_order_positive_amount"),
+        CheckConstraint(
+            "status IN ('CREATED', 'PENDING', 'SUCCEEDED', 'FAILED', 'CANCELLED', 'EXPIRED', 'NEEDS_REVIEW')",
+            name="chk_payment_order_status",
+        ),
+        Index("ix_payment_orders_tenant_created", "institution_id", "created_at"),
+    )
+
+
+class FeeRefund(BaseModel):
+    """Refund (partial or full) of a recorded fee payment."""
+    __tablename__ = "fee_refunds"
+
+    payment_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("fee_payments.id", ondelete="RESTRICT"), nullable=False, index=True,
+    )
+    gateway_refund_id: Mapped[Optional[str]] = mapped_column(String(64), unique=True, nullable=True)
+    amount: Mapped[Decimal] = mapped_column(Numeric(12, 2), nullable=False)
+    reason: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
+    status: Mapped[str] = mapped_column(String(20), default="PENDING", server_default="PENDING", nullable=False)
+    requested_by: Mapped[Optional[uuid.UUID]] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("users.id", ondelete="SET NULL"), nullable=True,
+    )
+    processed_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
+
+    payment: Mapped["FeePayment"] = relationship("FeePayment", back_populates="refunds")
+
+    __table_args__ = (
+        CheckConstraint("amount > 0", name="chk_refund_positive_amount"),
+        CheckConstraint("status IN ('PENDING', 'PROCESSED', 'FAILED')", name="chk_refund_status"),
+    )
+
+
+class FeeReceipt(TenantModel):
+    """Receipt for a recorded payment with a frozen snapshot of everything printed on it."""
+    __tablename__ = "fee_receipts"
+
+    payment_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("fee_payments.id", ondelete="RESTRICT"), nullable=False, unique=True,
+    )
+    invoice_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("fee_invoices.id", ondelete="RESTRICT"), nullable=False, index=True,
+    )
+    student_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("students.id", ondelete="RESTRICT"), nullable=False, index=True,
+    )
+    receipt_number: Mapped[str] = mapped_column(String(32), nullable=False)
+    issued_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=lambda: datetime.now(timezone.utc), server_default=func.now(),
+        nullable=False,
+    )
+    is_test: Mapped[bool] = mapped_column(Boolean, default=False, server_default="false", nullable=False)
+    snapshot: Mapped[dict] = mapped_column(JSONB, nullable=False)
+
+    payment: Mapped["FeePayment"] = relationship("FeePayment", back_populates="receipt")
+
+    __table_args__ = (
+        UniqueConstraint("institution_id", "receipt_number", name="uq_institution_receipt_number"),
+    )

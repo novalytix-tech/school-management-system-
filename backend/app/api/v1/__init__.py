@@ -70,6 +70,8 @@ PUBLIC_ENDPOINTS = {
     # Public website admission forms.
     "api_v1.admissions.create_inquiry",
     "api_v1.admissions.submit_application",
+    # Razorpay server-to-server webhook: authenticated by its HMAC signature.
+    "api_v1.payments.razorpay_webhook",
 }
 
 ADMIN = ("school_admin",)
@@ -108,6 +110,14 @@ ENDPOINT_ROLES = {
     "api_v1.finance.get_invoice": ADMIN,
     "api_v1.finance.get_finance_summary": ADMIN,
     "api_v1.finance.record_invoice_payment": ADMIN,
+    "api_v1.finance.create_invoice": ADMIN,
+    "api_v1.finance.generate_invoices": ADMIN,
+    "api_v1.finance.add_invoice_adjustment": ADMIN,
+    "api_v1.finance.delete_invoice_adjustment": ADMIN,
+    "api_v1.finance.list_payments": ADMIN,
+    "api_v1.finance.refund_payment": ADMIN,
+    # Fee portal, receipts and checkout are open to any signed-in user; each
+    # view enforces ownership (student self / parent wards / school staff).
     # Library
     "api_v1.library.create_book": STAFF,
     "api_v1.library.issue_book": STAFF,

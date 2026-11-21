@@ -16,7 +16,9 @@ import { Pagination } from '../common/Pagination';
 import { SearchInput } from '../common/SearchInput';
 import { PrintableReceiptModal } from './PrintableReceiptModal';
 import { InvoiceDetailsModal } from './InvoiceDetailsModal';
-import { IndianRupee, Plus, Download, Printer, CheckCircle, AlertCircle, FileText, CreditCard, Users, Eye, Sliders } from 'lucide-react';
+import { AdminOnlinePayments } from './online/AdminOnlinePayments';
+import { hasBackendSession } from '../../services/feePortalService';
+import { IndianRupee, Plus, Download, Printer, CheckCircle, AlertCircle, FileText, CreditCard, Users, Eye, Sliders, RotateCcw } from 'lucide-react';
 
 export const AdminFeePortal: React.FC = () => {
   const { schoolSettings, addToast, currentRole } = useERP();
@@ -43,7 +45,9 @@ export const AdminFeePortal: React.FC = () => {
   const feeStructures = useMemo(() => feeService.getFeeStructures(), [storeVersion]);
 
   // Admin Navigation Tabs: 'ledger' | 'transactions' | 'balances' | 'policy'
-  const [adminTab, setAdminTab] = useState<'ledger' | 'transactions' | 'balances' | 'policy'>('ledger');
+  const [adminTab, setAdminTab] = useState<'ledger' | 'transactions' | 'balances' | 'policy' | 'online'>('ledger');
+  // Server-backed online payments & refunds: only with a backend session.
+  const backendSession = hasBackendSession() && (currentRole === 'school_admin' || currentRole === 'super_admin');
 
   // Filter States for Ledger Tab
   const [search, setSearch] = useState('');
@@ -369,7 +373,21 @@ export const AdminFeePortal: React.FC = () => {
           <Sliders size={15} />
           <span>Fee Policy & Structures</span>
         </button>
+
+        {backendSession && (
+          <button
+            type="button"
+            className={`fee-tab-pill ${adminTab === 'online' ? 'active' : ''}`}
+            onClick={() => setAdminTab('online')}
+          >
+            <RotateCcw size={15} />
+            <span>Online payments & refunds</span>
+          </button>
+        )}
       </div>
+
+      {/* TAB 5: SERVER ONLINE PAYMENTS & REFUNDS (backend session only) */}
+      {adminTab === 'online' && backendSession && <AdminOnlinePayments addToast={addToast} />}
 
       {/* TAB 1: ALL INVOICES LEDGER */}
       {adminTab === 'ledger' && (

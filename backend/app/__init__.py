@@ -79,6 +79,29 @@ def _validate_runtime_modes(flask_app, config_name):
     if flask_app.config.get("DEV_AUTH_ENABLED") and config_name == "production":
         raise RuntimeError("DEV_AUTH_ENABLED must never be set in production.")
 
+    _validate_payment_mode(flask_app, config_name)
+
+
+def _validate_payment_mode(flask_app, config_name):
+    """PAYMENT_MODE must be known; live mode needs both Razorpay keys."""
+    mode = (flask_app.config.get("PAYMENT_MODE") or "auto").strip().lower()
+    if mode not in ("auto", "live", "mock", "disabled"):
+        raise RuntimeError("PAYMENT_MODE must be one of: auto, live, mock, disabled.")
+    flask_app.config["PAYMENT_MODE"] = mode
+    key_id = (flask_app.config.get("RAZORPAY_KEY_ID") or "").strip()
+    key_secret = (flask_app.config.get("RAZORPAY_KEY_SECRET") or "").strip()
+    if mode == "live" and not (key_id and key_secret):
+        raise RuntimeError(
+            "PAYMENT_MODE=live requires RAZORPAY_KEY_ID and RAZORPAY_KEY_SECRET to be set."
+        )
+    if mode == "mock" and config_name == "production":
+        flask_app.logger.warning("PAYMENT_MODE=mock in production: online payments are SIMULATED (test only).")
+    if mode in ("live", "auto") and key_id and key_secret and not flask_app.config.get("RAZORPAY_WEBHOOK_SECRET"):
+        flask_app.logger.warning(
+            "RAZORPAY_WEBHOOK_SECRET is not set: Razorpay webhooks will be rejected "
+            "(payments still settle through checkout verification)."
+        )
+
 
 def create_app(config_name=None, config_overrides=None):
     """Application factory for the School ERP backend."""

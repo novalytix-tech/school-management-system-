@@ -16,6 +16,14 @@ export interface ApiResponse<T = any> {
   };
 }
 
+export interface BlobResponse {
+  success: boolean;
+  blob?: Blob;
+  /** From Content-Disposition, when the server sends one. */
+  filename?: string;
+  error?: { code: string; message: string };
+}
+
 /** Fired on window after /auth/refresh issues a new access token. */
 export const TOKEN_REFRESHED_EVENT = 'nts_erp_token_refreshed';
 
@@ -168,6 +176,51 @@ class HttpClient {
           message: err?.name === 'AbortError'
             ? 'The server took too long to respond. Please check your connection and try again.'
             : err?.message || 'Network request failed',
+        },
+      };
+    } finally {
+      loadingBus.done();
+    }
+  }
+
+  /**
+   * GET a binary resource (e.g. a receipt PDF) with the same base URL, bearer
+   * token and refresh-on-401 behaviour as request(). Never throws.
+   */
+  public async getBlob(endpoint: string): Promise<BlobResponse> {
+    const url = endpoint.startsWith('http') ? endpoint : `${this.baseURL}${endpoint.startsWith('/') ? '' : '/'}${endpoint}`;
+    const headers = new Headers();
+    const token = this.getToken();
+    if (token) headers.set('Authorization', `Bearer ${token}`);
+    const config: RequestInit = { method: 'GET', headers, credentials: 'include' };
+
+    loadingBus.start();
+    try {
+      let response = await this.fetchWithTimeout(url, config);
+      if (response.status === 401) {
+        const newToken = await this.refreshAccessToken();
+        if (!newToken) {
+          return { success: false, error: { code: 'AUTH_EXPIRED', message: 'Session expired. Please sign in again.' } };
+        }
+        headers.set('Authorization', `Bearer ${newToken}`);
+        response = await this.fetchWithTimeout(url, { ...config, headers });
+      }
+      if (!response.ok) {
+        const body: any = await response.json().catch(() => null);
+        return {
+          success: false,
+          error: body?.error || { code: `HTTP_${response.status}`, message: response.statusText || 'Request failed' },
+        };
+      }
+      const disposition = response.headers.get('Content-Disposition') || '';
+      const match = /filename\*?=(?:UTF-8'')?"?([^";]+)"?/i.exec(disposition);
+      return { success: true, blob: await response.blob(), filename: match ? decodeURIComponent(match[1]) : undefined };
+    } catch (err: any) {
+      return {
+        success: false,
+        error: {
+          code: err?.name === 'AbortError' ? 'TIMEOUT' : 'NETWORK_ERROR',
+          message: err?.name === 'AbortError' ? 'The server took too long to respond.' : err?.message || 'Network request failed',
         },
       };
     } finally {

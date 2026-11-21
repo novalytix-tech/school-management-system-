@@ -65,6 +65,16 @@ class BaseConfig:
     # client. Leave unset to keep the frontend's demo/test checkout behaviour.
     RAZORPAY_KEY_ID = os.getenv("RAZORPAY_KEY_ID", "").strip()
     RAZORPAY_KEY_SECRET = os.getenv("RAZORPAY_KEY_SECRET", "").strip()
+    # Secret configured on the Razorpay dashboard webhook (HMAC of the raw body).
+    RAZORPAY_WEBHOOK_SECRET = os.getenv("RAZORPAY_WEBHOOK_SECRET", "").strip()
+    # auto (default): live when both keys are set, otherwise disabled.
+    # live: real Razorpay Checkout (startup fails without both keys).
+    # mock: simulated gateway for development/demo — must be chosen explicitly;
+    #       every payment/receipt is flagged as a TEST payment.
+    # disabled: fees are visible but online payment is switched off.
+    PAYMENT_MODE = (os.getenv("PAYMENT_MODE", "auto") or "auto").strip().lower()
+    # Optional local PNG/JPEG printed on PDF receipts (never fetched over the network).
+    RECEIPT_LOGO_PATH = os.getenv("RECEIPT_LOGO_PATH", "").strip()
 
     # Development/test authentication (database-free). Only honoured when
     # DATABASE_ENABLED is false and never in production.
@@ -146,6 +156,12 @@ class TestingConfig(BaseConfig):
     RATELIMIT_ENABLED = False
     JWT_COOKIE_SECURE = False
     # Fixed test-only secrets (never used outside the testing config).
+    # Tests never see the real gateway keys from .env; payment tests set their
+    # own fake keys/mode per test and mock every Razorpay HTTP call.
+    RAZORPAY_KEY_ID = os.getenv("TEST_RAZORPAY_KEY_ID", "")
+    RAZORPAY_KEY_SECRET = os.getenv("TEST_RAZORPAY_KEY_SECRET", "")
+    RAZORPAY_WEBHOOK_SECRET = os.getenv("TEST_RAZORPAY_WEBHOOK_SECRET", "")
+    PAYMENT_MODE = (os.getenv("TEST_PAYMENT_MODE", "auto") or "auto").strip().lower()
     SECRET_KEY = os.getenv("SECRET_KEY") or "test-only-secret-key-not-for-production-use"
     JWT_SECRET_KEY = os.getenv("JWT_SECRET_KEY") or "test-only-jwt-secret-key-not-for-production-use"
 

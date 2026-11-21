@@ -20,7 +20,7 @@ from flask_jwt_extended import create_access_token
 from app.extensions import db, socketio
 from app.models import (
     Institution, User, Role, UserRole, Student, ClassLevel, AcademicYear, Subject,
-    FeeStructure, FeeInvoice, FeePayment, FinancialTransaction,
+    FeeStructure, FeeInvoice, FeePayment, FinancialTransaction, FeeReceipt, FeeRefund, PaymentOrder,
     Book, BookCopy, BookLoan,
     AdmissionApplication, AdmissionInquiry, QuestionPaper, QuestionPaperVersion,
     Message, TokenBlocklist,
@@ -99,6 +99,10 @@ def invoice(app):
     yield inv
     db.session.rollback()
     pay_ids = [p.id for p in FeePayment.query.filter_by(invoice_id=inv_id).all()]
+    FeeReceipt.query.filter_by(invoice_id=inv_id).delete(synchronize_session=False)
+    if pay_ids:
+        FeeRefund.query.filter(FeeRefund.payment_id.in_(pay_ids)).delete(synchronize_session=False)
+    PaymentOrder.query.filter_by(invoice_id=inv_id).delete(synchronize_session=False)
     if pay_ids:
         FinancialTransaction.query.filter(FinancialTransaction.payment_id.in_(pay_ids)).delete(
             synchronize_session=False)
@@ -185,115 +189,9 @@ def test_invoice_list_bad_student_id_is_400(client):
     assert client.get("/api/v1/finance/invoices?student_id=xyz", headers=admin_headers()).status_code == 400
 
 
-# ---------------------------------------------------------------- payments (Razorpay, mocked)
-
-class _FakeResp:
-    def __init__(self, payload):
-        self._b = json.dumps(payload).encode()
-
-    def read(self):
-        return self._b
-
-    def __enter__(self):
-        return self
-
-    def __exit__(self, *a):
-        return False
-
-
-@pytest.fixture
-def rzp_keys(app, monkeypatch):
-    monkeypatch.setitem(app.config, "RAZORPAY_KEY_ID", "rzp_test_fixmodules")
-    monkeypatch.setitem(app.config, "RAZORPAY_KEY_SECRET", "fixmodules-test-secret")
-    return "fixmodules-test-secret"
-
-
-def test_razorpay_order_validation(client, invoice, rzp_keys):
-    h = admin_headers()
-    url = "/api/v1/payments/razorpay/order"
-    sent = {}
-
-    def fake_urlopen(req, timeout=None):
-        sent.update(json.loads(req.data.decode()))
-        return _FakeResp({"id": "order_FIXMOD1", "amount": sent["amount"], "currency": "INR"})
-
-    with patch("app.api.v1.payments.urllib.request.urlopen", side_effect=fake_urlopen) as mocked:
-        assert client.post(url, headers=h, json={"amount": 10000}).status_code == 400  # no invoice
-        for bad in (100.9, "12.5", True, -100, 50):
-            assert client.post(url, headers=h, json={"amount": bad, "invoice_id": str(invoice.id)}).status_code == 400
-        assert client.post(url, headers=h, json={"amount": 500001, "invoice_id": str(invoice.id)}).status_code == 400
-        assert client.post(url, headers=h, json={"amount": 10000, "currency": "USD",
-                                                 "invoice_id": str(invoice.id)}).status_code == 400
-        assert mocked.call_count == 0
-        ok = client.post(url, headers=h, json={"amount": 10000, "invoice_id": str(invoice.id)})
-    assert ok.status_code == 200, ok.get_json()
-    assert sent["notes"]["invoice_id"] == str(invoice.id)
-    assert sent["notes"]["institution_id"] == str(invoice.institution_id)
-
-
-def test_razorpay_verify_records_once(client, invoice, rzp_keys):
-    h = admin_headers()
-    order_id, payment_id = "order_FIXMOD2", f"pay_FIXMOD{uuid.uuid4().hex[:8]}"
-    sig = hmac.new(rzp_keys.encode(), f"{order_id}|{payment_id}".encode(), hashlib.sha256).hexdigest()
-    order = {"id": order_id, "currency": "INR", "amount": 150000, "amount_paid": 150000, "status": "paid",
-             "notes": {"invoice_id": str(invoice.id), "institution_id": str(invoice.institution_id)}}
-    body = {"razorpay_order_id": order_id, "razorpay_payment_id": payment_id,
-            "razorpay_signature": sig, "invoice_id": str(invoice.id)}
-    url = "/api/v1/payments/razorpay/verify"
-
-    captured = {"id": payment_id, "order_id": order_id, "status": "captured", "amount": 150000}
-    with patch("app.api.v1.payments._fetch_order", return_value=order),             patch("app.api.v1.payments._fetch_payment", return_value=captured):
-        bad = client.post(url, headers=h, json={**body, "razorpay_signature": "0" * 64})
-        assert bad.status_code == 400
-        first = client.post(url, headers=h, json=body)
-        assert first.status_code == 201, first.get_json()
-        replay = client.post(url, headers=h, json=body)
-        assert replay.status_code == 200 and replay.get_json()["data"]["duplicate"] is True
-
-    inv = _fresh(FeeInvoice, invoice.id)
-    assert inv.paid_amount == Decimal("1500.00")
-    assert FeePayment.query.filter_by(invoice_id=invoice.id).count() == 1
-
-    # An order bound to another invoice cannot be used to pay this one.
-    other = {**order, "notes": {"invoice_id": str(uuid.uuid4()), "institution_id": str(invoice.institution_id)}}
-    pid2 = "pay_FIXMODX" + uuid.uuid4().hex[:6]
-    sig2 = hmac.new(rzp_keys.encode(), f"{order_id}|{pid2}".encode(), hashlib.sha256).hexdigest()
-    with patch("app.api.v1.payments._fetch_order", return_value=other),             patch("app.api.v1.payments._fetch_payment", return_value={**captured, "id": pid2}):
-        res = client.post(url, headers=h, json={**body, "razorpay_payment_id": pid2, "razorpay_signature": sig2})
-    assert res.status_code == 400
-
-
-def test_razorpay_verify_uncaptured_and_unappliable_payments_are_flagged(client, invoice, rzp_keys):
-    """Verified money is never dropped silently: retryable or flagged for reconciliation."""
-    h = admin_headers()
-    order_id = "order_FIXMOD3"
-    order = {"id": order_id, "currency": "INR", "amount": 150000, "amount_paid": 0, "status": "attempted",
-             "notes": {"invoice_id": str(invoice.id), "institution_id": str(invoice.institution_id)}}
-    url = "/api/v1/payments/razorpay/verify"
-
-    def _body(pid):
-        sig = hmac.new(rzp_keys.encode(), f"{order_id}|{pid}".encode(), hashlib.sha256).hexdigest()
-        return {"razorpay_order_id": order_id, "razorpay_payment_id": pid,
-                "razorpay_signature": sig, "invoice_id": str(invoice.id)}
-
-    # Authorized (manual capture): verified, not recorded, retryable.
-    pid = "pay_FIXAUTH" + uuid.uuid4().hex[:6]
-    with patch("app.api.v1.payments._fetch_order", return_value=order),             patch("app.api.v1.payments._fetch_payment",
-                  return_value={"id": pid, "order_id": order_id, "status": "authorized", "amount": 150000}):
-        res = client.post(url, headers=h, json=_body(pid))
-    assert res.status_code == 409
-    assert res.get_json()["data"] == {"verified": True, "recorded": False}
-
-    # Captured but larger than the balance: flagged for reconciliation, not recorded.
-    pid = "pay_FIXOVER" + uuid.uuid4().hex[:6]
-    with patch("app.api.v1.payments._fetch_order", return_value=order),             patch("app.api.v1.payments._fetch_payment",
-                  return_value={"id": pid, "order_id": order_id, "status": "captured", "amount": 99_999_999}):
-        res = client.post(url, headers=h, json=_body(pid))
-    assert res.status_code == 409
-    body = res.get_json()
-    assert body["error"]["code"] == "NEEDS_RECONCILIATION"
-    assert body["data"] == {"verified": True, "recorded": False}
-    assert FeePayment.query.filter_by(invoice_id=invoice.id).count() == 0
+# ---------------------------------------------------------------- payments (Razorpay)
+# Order / verify / webhook / refund coverage lives in tests/test_payments_razorpay.py
+# (the gateway was restructured into app.services.payment_service).
 
 
 # ---------------------------------------------------------------- library

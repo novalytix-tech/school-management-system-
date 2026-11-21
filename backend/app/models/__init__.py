@@ -20,7 +20,8 @@ from app.models.question_paper import (
     QuestionPaper, QuestionPaperVersion, QuestionPaperReview, QuestionPaperAmendment
 )
 from app.models.finance import (
-    FeeStructure, FeeStructureItem, FeeInvoice, FeeInvoiceItem, FeePayment, FinancialTransaction, PaymentGatewayWebhook
+    FeeStructure, FeeStructureItem, FeeInvoice, FeeInvoiceItem, FeePayment, FinancialTransaction, PaymentGatewayWebhook,
+    FeeInvoiceAdjustment, FeeInstallment, PaymentOrder, FeeRefund, FeeReceipt,
 )
 from app.models.timetable import TimetablePeriod, TimetableSlot, CalendarEvent
 from app.models.communication import Notice, Message, CommunicationGroup, GroupMember, GroupMessage
@@ -94,6 +95,11 @@ __all__ = [
     "FeePayment",
     "FinancialTransaction",
     "PaymentGatewayWebhook",
+    "FeeInvoiceAdjustment",
+    "FeeInstallment",
+    "PaymentOrder",
+    "FeeRefund",
+    "FeeReceipt",
     "TimetablePeriod",
     "TimetableSlot",
     "CalendarEvent",
