@@ -177,7 +177,7 @@ export const TeachersPage: React.FC = () => {
             name: accRes.data.full_name,
             role: 'teacher',
             loginId: accRes.data.login_id,
-            temporaryPassword: accRes.data.temporary_password || 'Init#2026!',
+            temporaryPassword: accRes.data.temporary_password || '',
             phone: accRes.data.phone,
             email: accRes.data.email,
           });

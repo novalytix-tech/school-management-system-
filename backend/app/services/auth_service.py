@@ -18,6 +18,7 @@ from app.utils.security import (
     validate_password_policy, generate_secure_token, hash_token
 )
 from app.services.email_service import email_service
+from app.services.security_audit import record_security_event, recent_failed_logins
 
 
 _EPOCH = datetime(1970, 1, 1, tzinfo=timezone.utc)
@@ -250,6 +251,21 @@ class AuthService:
                 error_code="INVALID_CREDENTIALS"
             )
 
+        # Account protection: after too many failed attempts the account is
+        # locked for a while, and even the right password is refused until it
+        # expires (so guessing can't continue). Checked before verification.
+        max_failed = int(current_app.config.get("LOGIN_MAX_FAILED_ATTEMPTS", 5))
+        lock_minutes = int(current_app.config.get("LOGIN_LOCKOUT_MINUTES", 15))
+        failures = recent_failed_logins(user.id, lock_minutes)
+        if len(failures) >= max_failed:
+            unlock_at = failures[-1] + timedelta(minutes=lock_minutes)
+            remaining = max(1, int((unlock_at - datetime.now(timezone.utc)).total_seconds() // 60) + 1)
+            raise APIException(
+                message=f"Too many failed sign-in attempts. Try again in {remaining} minute(s) or reset your password.",
+                status_code=429,
+                error_code="ACCOUNT_LOCKED",
+            )
+
         # Verify password using Argon2id
         is_valid_pw = verify_password(password, user.password_hash)
         if not is_valid_pw:
@@ -259,6 +275,17 @@ class AuthService:
                     is_valid_pw = True
 
         if not is_valid_pw:
+            # Audit the failure (never the password) and lock on the threshold.
+            record_security_event(
+                "LOGIN_FAILED", user.id, institution_id=user.institution_id,
+                summary="Failed sign-in attempt (wrong password).",
+            )
+            if len(failures) + 1 >= max_failed:
+                record_security_event(
+                    "ACCOUNT_LOCKED", user.id, institution_id=user.institution_id,
+                    summary=f"Locked for {lock_minutes} minutes after {max_failed} failed sign-in attempts.",
+                )
+            db.session.commit()
             raise APIException(
                 message=generic_error,
                 status_code=401,
@@ -561,6 +588,8 @@ class AuthService:
             if not TokenBlocklist.query.filter_by(jti=jti).first():
                 db.session.add(TokenBlocklist(jti=jti, user_id=uid, token_type="refresh", expires_at=exp))
 
+        if user_id:
+            record_security_event("LOGOUT", user_id, actor_user_id=user_id, summary="Signed out of this session.")
         db.session.commit()
 
     @staticmethod
@@ -576,6 +605,7 @@ class AuthService:
             expires_at=now + timedelta(days=7),
             revoked_at=now,
         ))
+        record_security_event("ALL_SESSIONS_REVOKED", user_id, summary="Every active session was signed out.")
         db.session.commit()
 
     @staticmethod

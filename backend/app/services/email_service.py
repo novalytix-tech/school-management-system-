@@ -21,7 +21,10 @@ class EmailService:
             "html": html_body,
             "text": text_body,
         }
-        self.outbox.append(message_data)
+        # Kept in memory for tests only: in a running server it would grow
+        # forever and hold password-reset links.
+        if current_app.config.get("TESTING"):
+            self.outbox.append(message_data)
 
         # In testing mode or when SMTP host is unset/mocked, return early
         if current_app.config.get("TESTING") or os.getenv("SMTP_DISABLED", "false").lower() in ("true", "1"):
@@ -56,7 +59,7 @@ class EmailService:
             current_app.logger.info("Email successfully dispatched to %s: %s", to_email, subject)
             return True
         except Exception as e:
-            current_app.logger.warning("SMTP dispatch to %s failed: %s. Saved in local outbox.", to_email, e)
+            current_app.logger.warning("SMTP dispatch to %s failed: %s", to_email, e)
             return False
 
     def send_password_reset_email(self, to_email: str, user_name: str, raw_token: str, frontend_url: Optional[str] = None) -> bool:

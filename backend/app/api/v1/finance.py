@@ -10,6 +10,7 @@ from app.models import (
 )
 from app.utils.tenant import get_current_tenant_id
 from app.utils.errors import APIException
+from app.services.security_audit import record_security_event
 
 finance_bp = Blueprint("finance", __name__, url_prefix="/finance")
 
@@ -108,6 +109,12 @@ def record_payment(invoice_id, institution_id, amount: Decimal, method: str,
         credit_or_debit="CREDIT",
         description=f"Fee collection for {inv.invoice_number} via {method}",
     ))
+    # Financial audit trail: amount, invoice and method only (no card/bank data).
+    record_security_event(
+        "PAYMENT_RECORDED", inv.id, entity_type="FeeInvoice",
+        actor_user_id=recorded_by, institution_id=inv.institution_id,
+        summary=f"{amount} recorded against {inv.invoice_number} via {method}; status {inv.status}.",
+    )
     db.session.flush()
     return inv, payment
 

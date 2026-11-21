@@ -62,7 +62,8 @@ class HttpClient {
         try {
           const refreshRes = await this.fetchWithTimeout(`${this.baseURL}/auth/refresh`, {
             method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
+            // The server requires this header for cookie-based refresh (CSRF defence).
+            headers: { 'Content-Type': 'application/json', 'X-Requested-With': 'XMLHttpRequest' },
             credentials: 'include',
           });
           const refreshData = refreshRes.ok ? await refreshRes.json().catch(() => null) : null;

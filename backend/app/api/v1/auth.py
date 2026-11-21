@@ -1,3 +1,4 @@
+import re
 import uuid
 from flask import Blueprint, request, jsonify, current_app
 from flask_jwt_extended import (
@@ -16,6 +17,34 @@ auth_bp = Blueprint("auth", __name__, url_prefix="/auth")
 def _auth_service():
     """Database-backed AuthService, or DevAuthService while the database is disconnected."""
     return DevAuthService if is_dev_auth_active() else AuthService
+
+
+REFRESH_COOKIE = "refresh_token_cookie"
+REFRESH_COOKIE_PATH = "/api/v1/auth"
+
+
+def _set_refresh_cookie(response, token):
+    """HttpOnly refresh cookie; SameSite/Secure come from config (cross-site deployments need None+Secure)."""
+    response.set_cookie(
+        key=REFRESH_COOKIE,
+        value=token,
+        httponly=True,
+        secure=current_app.config.get("JWT_COOKIE_SECURE", True),
+        samesite=current_app.config.get("JWT_COOKIE_SAMESITE", "Lax"),
+        path=REFRESH_COOKIE_PATH,
+        max_age=7 * 86400,
+    )
+
+
+def _clear_refresh_cookie(response):
+    # Must repeat the attributes, or browsers keep a SameSite=None/Secure cookie.
+    response.delete_cookie(
+        key=REFRESH_COOKIE,
+        path=REFRESH_COOKIE_PATH,
+        secure=current_app.config.get("JWT_COOKIE_SECURE", True),
+        samesite=current_app.config.get("JWT_COOKIE_SAMESITE", "Lax"),
+        httponly=True,
+    )
 
 
 @auth_bp.route("/login", methods=["POST"])
@@ -41,17 +70,7 @@ def login():
         "message": "Login successful."
     })
 
-    # Set secure HttpOnly refresh token cookie
-    secure_cookie = current_app.config.get("JWT_COOKIE_SECURE", False)
-    response.set_cookie(
-        key="refresh_token_cookie",
-        value=refresh_token,
-        httponly=True,
-        secure=secure_cookie,
-        samesite="Lax",
-        path="/api/v1/auth",
-        max_age=7 * 86400,  # 7 days
-    )
+    _set_refresh_cookie(response, refresh_token)
 
     return response, 200
 
@@ -69,7 +88,16 @@ def refresh():
             refresh_token = auth_header.split(" ")[1]
 
     if not refresh_token:
-        refresh_token = request.cookies.get("refresh_token_cookie")
+        refresh_token = request.cookies.get(REFRESH_COOKIE)
+        # CSRF defence for the ambient cookie: a cross-site form/navigation
+        # can't add custom headers, and a cross-origin fetch with one needs a
+        # CORS preflight that only allowed origins pass.
+        if refresh_token and request.headers.get("X-Requested-With") != "XMLHttpRequest":
+            raise APIException(
+                message="Missing X-Requested-With header for cookie-based refresh.",
+                status_code=403,
+                error_code="CSRF_HEADER_REQUIRED",
+            )
 
     if not refresh_token:
         raise APIException(
@@ -80,9 +108,10 @@ def refresh():
 
     try:
         decoded = decode_token(refresh_token)
-    except Exception as e:
+    except Exception:
+        # Don't echo the token library's error text to the client.
         raise APIException(
-            message=f"Invalid or expired refresh token: {str(e)}",
+            message="Invalid or expired refresh token.",
             status_code=401,
             error_code="INVALID_REFRESH_TOKEN"
         )
@@ -109,16 +138,7 @@ def refresh():
         "message": "Session successfully refreshed."
     })
 
-    secure_cookie = current_app.config.get("JWT_COOKIE_SECURE", False)
-    response.set_cookie(
-        key="refresh_token_cookie",
-        value=new_refresh_token,
-        httponly=True,
-        secure=secure_cookie,
-        samesite="Lax",
-        path="/api/v1/auth",
-        max_age=7 * 86400,
-    )
+    _set_refresh_cookie(response, new_refresh_token)
 
     return response, 200
 
@@ -131,7 +151,7 @@ def logout():
     user_id = uuid.UUID(get_jwt_identity())
 
     # Check for refresh token in cookie
-    refresh_token = request.cookies.get("refresh_token_cookie")
+    refresh_token = request.cookies.get(REFRESH_COOKIE)
     refresh_claims = None
     if refresh_token:
         try:
@@ -150,11 +170,7 @@ def logout():
         "message": "Successfully logged out from current session."
     })
 
-    # Clear refresh cookie
-    response.delete_cookie(
-        key="refresh_token_cookie",
-        path="/api/v1/auth"
-    )
+    _clear_refresh_cookie(response)
 
     return response, 200
 
@@ -170,7 +186,7 @@ def logout_all():
         "success": True,
         "message": "Successfully logged out from all active sessions."
     })
-    response.delete_cookie(key="refresh_token_cookie", path="/api/v1/auth")
+    _clear_refresh_cookie(response)
     return response, 200
 
 
@@ -458,7 +474,13 @@ def update_current_user_profile():
         # and the children's logins.
         updates["phone"] = clean_phone(data["phone"])
     if "avatar_url" in data:
-        updates["avatar_url"] = clean_text_field(data["avatar_url"], "avatar_url", 500)
+        avatar = clean_text_field(data["avatar_url"], "avatar_url", 500)
+        # Only plain web links: blocks javascript:, data:text/html and other
+        # schemes that could run script wherever the URL is rendered.
+        if avatar and not re.match(r"^https?://[^\s<>\"']+$", avatar, re.IGNORECASE):
+            raise APIException(message="avatar_url must be an http(s) link.",
+                               status_code=400, error_code="VALIDATION_ERROR")
+        updates["avatar_url"] = avatar
 
     for field, value in updates.items():
         setattr(user, field, value)

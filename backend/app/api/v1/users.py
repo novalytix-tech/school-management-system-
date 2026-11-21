@@ -14,6 +14,7 @@ from app.services.auth_service import (
     AuthService, clean_text_field, clean_email, clean_phone,
 )
 from app.services.dev_auth_service import is_dev_auth_active, DevAuthService
+from app.services.security_audit import record_security_event
 
 users_bp = Blueprint("users", __name__, url_prefix="/users")
 
@@ -49,7 +50,9 @@ def _load_managed_user(user_id: uuid.UUID, claims, is_super: bool) -> User:
     """Load a target account the caller is allowed to manage.
 
     Non-super-admins may only act on accounts of their own institution (other
-    tenants' accounts are reported as not found) and never on super_admin accounts.
+    tenants' accounts are reported as not found) and never on administrator
+    accounts: resetting a fellow school admin's password would hand over that
+    account (the temporary password is returned), so only a super_admin may.
     """
     u = db.session.get(User, user_id)
     if not u or u.is_deleted:
@@ -61,7 +64,21 @@ def _load_managed_user(user_id: uuid.UUID, claims, is_super: bool) -> User:
         if "super_admin" in u.role_names:
             raise APIException(message="You cannot manage a platform administrator account.",
                                status_code=403, error_code="FORBIDDEN")
+        if "school_admin" in u.role_names:
+            raise APIException(message="Only a platform administrator can manage another administrator's account.",
+                               status_code=403, error_code="FORBIDDEN")
     return u
+
+
+def _audit(action: str, target: User, claims, summary: str) -> None:
+    """Audit an admin action on an account (never includes passwords)."""
+    record_security_event(
+        action, target.id,
+        actor_user_id=uuid.UUID(claims["sub"]) if claims.get("sub") else None,
+        actor_role=",".join(claims.get("roles") or []) or None,
+        institution_id=target.institution_id,
+        summary=summary,
+    )
 
 
 @users_bp.route("", methods=["GET"])
@@ -313,6 +330,7 @@ def create_user_account():
     db.session.add(new_user)
     db.session.flush()
     db.session.add(UserRole(user_id=new_user.id, role_id=role.id))
+    _audit("USER_CREATED", new_user, get_jwt(), f"Account created with role '{role_name}'.")
     db.session.commit()
 
     return jsonify({
@@ -362,6 +380,9 @@ def admin_reset_password(user_id):
 
     u.password_hash = hash_password(temp_password)
     u.must_change_password = True
+    _audit("ADMIN_PASSWORD_RESET", u, claims, "Temporary password issued by an administrator.")
+    # A reset also clears any failed-login lockout.
+    _audit("ACCOUNT_UNLOCKED", u, claims, "Lockout cleared by password reset.")
     # Sessions opened with the old password must not survive the reset
     # (logout_all_sessions commits the password change along with it).
     AuthService.logout_all_sessions(u.id)
@@ -396,6 +417,7 @@ def toggle_user_status(user_id):
     u = _load_managed_user(user_id, claims, is_super)
 
     u.is_active = not u.is_active
+    _audit("USER_STATUS_CHANGED", u, claims, "Account activated." if u.is_active else "Account deactivated.")
     if not u.is_active:
         # A deactivated account must lose access immediately, not when its
         # current access/refresh tokens expire (this also commits the toggle).
@@ -428,7 +450,9 @@ def resend_credentials(user_id):
                            status_code=400, error_code="VALIDATION_ERROR")
 
     if not is_dev_auth_active():
-        _load_managed_user(user_id, claims, is_super)
+        target = _load_managed_user(user_id, claims, is_super)
+        _audit("CREDENTIALS_RESENT", target, claims, f"Login details re-sent via {channel}.")
+        db.session.commit()
 
     return jsonify({
         "success": True,

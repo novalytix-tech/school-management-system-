@@ -143,7 +143,7 @@ def test_refresh_token_rotation(client):
     assert login_res.status_code == 200
 
     # 2. Call /refresh with cookie
-    refresh_res = client.post("/api/v1/auth/refresh")
+    refresh_res = client.post("/api/v1/auth/refresh", headers={"X-Requested-With": "XMLHttpRequest"})
     assert refresh_res.status_code == 200
     data = refresh_res.get_json()
     assert "access_token" in data["data"]

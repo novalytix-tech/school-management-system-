@@ -116,7 +116,7 @@ export const AccountManagementPage: React.FC = () => {
         name: res.data.full_name,
         role: res.data.role,
         loginId: res.data.login_id,
-        temporaryPassword: res.data.temporary_password || 'Init#2026!',
+        temporaryPassword: res.data.temporary_password || '',
         phone: res.data.phone || '+91 98222 33445',
         email: res.data.email,
       });

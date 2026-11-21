@@ -38,7 +38,15 @@ interface RolePreset {
   icon: React.ComponentType<{ size?: number; className?: string }>;
 }
 
-const ROLES: RolePreset[] = [
+/**
+ * Demo quick-login presets carry real sign-in passwords, so they exist only in
+ * local development or when a demo build opts in with VITE_ENABLE_DEMO_LOGIN=true.
+ * In a production build this constant is false and the bundler drops the whole
+ * preset list, so no password ever ships to the browser.
+ */
+const DEMO_LOGIN_ENABLED = import.meta.env.DEV || import.meta.env.VITE_ENABLE_DEMO_LOGIN === 'true';
+
+const ROLES: RolePreset[] = !DEMO_LOGIN_ENABLED ? [] : [
   {
     role: 'school_admin',
     label: 'Admin',
@@ -112,8 +120,10 @@ export const LoginPage: React.FC = () => {
   const { login, addToast, isAuthenticated } = useERP();
 
   // Unified login state
-  const [loginIdentifier, setLoginIdentifier] = useState('principal@stxaviers.edu.in');
-  const [loginPassword, setLoginPassword] = useState('Principal#2026!');
+  // Pre-filled with the first demo preset only where demo login is enabled;
+  // production starts empty (no credentials in the bundle).
+  const [loginIdentifier, setLoginIdentifier] = useState(ROLES[0]?.email ?? '');
+  const [loginPassword, setLoginPassword] = useState(ROLES[0]?.defaultPass ?? '');
   const [showPassword, setShowPassword] = useState(false);
   const [rememberMe, setRememberMe] = useState(true);
   const [submitting, setSubmitting] = useState(false);
@@ -498,7 +508,8 @@ export const LoginPage: React.FC = () => {
             </div>
           </div>
 
-          {/* Demo quick-login presets */}
+          {/* Demo quick-login presets (development / opted-in demo builds only) */}
+          {ROLES.length > 0 && (<>
           <div style={{ marginBottom: '16px', textAlign: 'center' }}>
             <span style={{ fontSize: '13px', fontWeight: 700, color: '#475569', textTransform: 'uppercase', letterSpacing: '1px' }}>
               Quick Demo Login
@@ -535,6 +546,7 @@ export const LoginPage: React.FC = () => {
               );
             })}
           </div>
+          </>)}
 
         </div>
 

@@ -751,10 +751,13 @@ def bulk_import_students():
             status_code=409,
             error_code="DUPLICATE_RECORD",
         )
-    except Exception as exc:
+    except Exception:
         db.session.rollback()
+        # Details (SQL, column names) go to the server log, never to the client.
+        current_app.logger.exception("Bulk student import rejected by the database")
         raise APIException(
-            "Database rejected the batch: " + str(exc).splitlines()[0][:160],
+            "The database rejected this import batch; nothing was imported. "
+            "Check the rows for invalid or over-long values and retry.",
             status_code=400,
             error_code="IMPORT_DB_ERROR",
         )

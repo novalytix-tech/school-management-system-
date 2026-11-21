@@ -16,6 +16,52 @@ from app.api import register_api_blueprints
 from app.api.v1.auth_callbacks import register_jwt_callbacks
 
 
+def _validate_secrets(flask_app):
+    """Refuse to run with missing/placeholder signing secrets (tokens would be forgeable)."""
+    if flask_app.config.get("TESTING"):
+        return
+    from app.config import INSECURE_SECRET_VALUES
+    for name in ("SECRET_KEY", "JWT_SECRET_KEY"):
+        value = flask_app.config.get(name) or ""
+        if value.strip() in INSECURE_SECRET_VALUES:
+            raise RuntimeError(
+                f"{name} is not set (or is a placeholder). Set a long random value in the "
+                "environment, e.g. python -c \"import secrets; print(secrets.token_urlsafe(48))\""
+            )
+        if len(value) < 32:
+            flask_app.logger.warning("%s is shorter than 32 characters; use a longer random value.", name)
+
+    samesite = flask_app.config.get("JWT_COOKIE_SAMESITE")
+    if samesite not in ("Lax", "Strict", "None"):
+        raise RuntimeError("REFRESH_COOKIE_SAMESITE must be Lax, Strict or None.")
+    if samesite == "None":
+        # Browsers drop SameSite=None cookies that aren't Secure.
+        flask_app.config["JWT_COOKIE_SECURE"] = True
+
+
+def _register_security_headers(flask_app):
+    """Defensive HTTP headers on every response."""
+    from flask import request
+
+    @flask_app.after_request
+    def _security_headers(response):
+        headers = response.headers
+        headers.setdefault("X-Content-Type-Options", "nosniff")
+        headers.setdefault("X-Frame-Options", "DENY")
+        headers.setdefault("Referrer-Policy", "no-referrer")
+        headers.setdefault("Permissions-Policy", "camera=(), microphone=(), geolocation=(), payment=()")
+        headers.setdefault("Cross-Origin-Opener-Policy", "same-origin")
+        if response.mimetype == "application/json":
+            # The API only ever returns data: nothing may be executed or framed.
+            headers.setdefault("Content-Security-Policy", "default-src 'none'; frame-ancestors 'none'")
+        if request.path.startswith("/api/"):
+            # Responses carry personal and financial data: never cache them.
+            headers.setdefault("Cache-Control", "no-store")
+        if request.is_secure:
+            headers.setdefault("Strict-Transport-Security", "max-age=31536000; includeSubDomains")
+        return response
+
+
 def _validate_runtime_modes(flask_app, config_name):
     """Fail fast on unsafe or incomplete database/authentication configuration."""
     if flask_app.config.get("DATABASE_ENABLED"):
@@ -46,6 +92,15 @@ def create_app(config_name=None, config_overrides=None):
         flask_app.config.update(config_overrides)
 
     _validate_runtime_modes(flask_app, config_name)
+    _validate_secrets(flask_app)
+
+    proxies = flask_app.config.get("TRUSTED_PROXY_COUNT") or 0
+    if proxies > 0:
+        # Real client IP/scheme from the proxy's X-Forwarded-* headers (rate
+        # limits, audit logs, HSTS). Only as many hops as are actually trusted.
+        from werkzeug.middleware.proxy_fix import ProxyFix
+        flask_app.wsgi_app = ProxyFix(flask_app.wsgi_app, x_for=proxies, x_proto=proxies, x_host=proxies)
+    _register_security_headers(flask_app)
 
     # Initialize extensions with app instance. SQLAlchemy and Alembic are only
     # bound when the database is enabled, so no engine or connection pool is

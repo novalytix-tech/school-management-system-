@@ -17,10 +17,20 @@ def env_flag(name: str, default: bool = False) -> bool:
     return raw.strip().lower() in ("1", "true", "yes", "on")
 
 
+# Placeholder values that must never sign real tokens or sessions.
+INSECURE_SECRET_VALUES = {
+    "", "sms-erp-default-secret-key-change-me", "sms-erp-default-jwt-secret-key",
+    "change-me", "changeme", "secret",
+}
+
+
 class BaseConfig:
     """Base configuration with shared defaults."""
-    SECRET_KEY = os.getenv("SECRET_KEY", "sms-erp-default-secret-key-change-me")
-    JWT_SECRET_KEY = os.getenv("JWT_SECRET_KEY", "sms-erp-default-jwt-secret-key")
+    # Secrets come only from the environment. create_app() refuses to start
+    # (outside tests) when they are missing or a known placeholder, because
+    # anyone could then forge access tokens.
+    SECRET_KEY = os.getenv("SECRET_KEY", "")
+    JWT_SECRET_KEY = os.getenv("JWT_SECRET_KEY", "")
 
     # Database integration switch. Disabled by default: the backend runs without
     # any database connection until DATABASE_ENABLED=true and DATABASE_URL are set
@@ -67,11 +77,32 @@ class BaseConfig:
     # JWT Lifecycles (15 minutes access, 7 days refresh)
     JWT_ACCESS_TOKEN_EXPIRES = timedelta(minutes=15)
     JWT_REFRESH_TOKEN_EXPIRES = timedelta(days=7)
-    JWT_TOKEN_LOCATION = ["headers", "cookies"]
+    # Access tokens are accepted only from the Authorization header, so no API
+    # call can be triggered cross-site with ambient cookies (CSRF). The refresh
+    # token lives in an HttpOnly cookie scoped to /api/v1/auth; /auth/refresh
+    # validates it manually and requires a custom header when it comes from the
+    # cookie (see auth.py).
+    JWT_TOKEN_LOCATION = ["headers"]
     JWT_COOKIE_CSRF_PROTECT = False
     JWT_REFRESH_COOKIE_PATH = "/api/v1/auth"
-    JWT_COOKIE_SECURE = False
-    JWT_COOKIE_SAMESITE = "Lax"
+    # Refresh-cookie attributes. When the frontend and API are on different
+    # sites (e.g. Vercel + Render) set REFRESH_COOKIE_SAMESITE=None so browsers
+    # send the cookie on the cross-site refresh call; it is then always Secure.
+    JWT_COOKIE_SAMESITE = os.getenv("REFRESH_COOKIE_SAMESITE", "Lax").strip().capitalize() or "Lax"
+    JWT_COOKIE_SECURE = env_flag("REFRESH_COOKIE_SECURE", True)
+
+    # Number of reverse proxies in front of the app (Render/Heroku/Nginx: 1).
+    # Needed so rate limits and audit logs see the real client IP instead of
+    # the proxy's; keep 0 when the app is reached directly (otherwise clients
+    # could spoof X-Forwarded-For).
+    TRUSTED_PROXY_COUNT = int(os.getenv("TRUSTED_PROXY_COUNT", "0") or 0)
+
+    # Account protection: lock an account after repeated failed logins.
+    LOGIN_MAX_FAILED_ATTEMPTS = int(os.getenv("LOGIN_MAX_FAILED_ATTEMPTS", "5") or 5)
+    LOGIN_LOCKOUT_MINUTES = int(os.getenv("LOGIN_LOCKOUT_MINUTES", "15") or 15)
+
+    # Reject request bodies over 10 MB (synced records are capped at 2 MB each).
+    MAX_CONTENT_LENGTH = 10 * 1024 * 1024
 
     # Redis (optional). When REDIS_URL is unset, everything falls back to
     # in-process memory so the app runs unchanged without Redis.
@@ -100,6 +131,8 @@ class DevelopmentConfig(BaseConfig):
     """Configuration for local development."""
     DEBUG = True
     TESTING = False
+    # Local http:// development can't use Secure cookies.
+    JWT_COOKIE_SECURE = env_flag("REFRESH_COOKIE_SECURE", False)
 
 
 class TestingConfig(BaseConfig):
@@ -111,6 +144,10 @@ class TestingConfig(BaseConfig):
         "pool_pre_ping": True,
     }
     RATELIMIT_ENABLED = False
+    JWT_COOKIE_SECURE = False
+    # Fixed test-only secrets (never used outside the testing config).
+    SECRET_KEY = os.getenv("SECRET_KEY") or "test-only-secret-key-not-for-production-use"
+    JWT_SECRET_KEY = os.getenv("JWT_SECRET_KEY") or "test-only-jwt-secret-key-not-for-production-use"
 
 
 class ProductionConfig(BaseConfig):
@@ -118,7 +155,6 @@ class ProductionConfig(BaseConfig):
     DEBUG = False
     TESTING = False
     JWT_COOKIE_SECURE = True
-    JWT_COOKIE_SAMESITE = "Strict"
 
 
 config_by_name = {

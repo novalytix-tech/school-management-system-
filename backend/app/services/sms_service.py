@@ -92,7 +92,7 @@ class SMSService:
             },
         )
         body = result["body"] if isinstance(result["body"], dict) else {"raw": result["body"]}
-        current_app.logger.info("MSG91 send to %s -> %s", to, body)
+        current_app.logger.info("MSG91 send to %s -> type=%s", to, body.get("type"))
         ok = str(body.get("type", "")).lower() == "success"
         if not ok:
             raise RuntimeError(body.get("message") or body.get("raw") or f"MSG91 rejected the request (HTTP {result['status']}).")
@@ -147,15 +147,18 @@ class SMSService:
         to = self._normalize_number(phone)
         variables = variables or {}
 
-        record = {"to": to, "message": message, "provider": provider}
-        self.outbox.append(record)
+        # The in-memory outbox exists for tests only; in a running server it
+        # would grow forever and keep credentials (temporary passwords, OTPs).
+        if current_app.config.get("TESTING"):
+            self.outbox.append({"to": to, "message": message, "provider": provider})
 
         if not to or len(to) < 12:
             return {"sent": False, "provider": provider, "detail": f"Invalid phone number: {phone}"}
 
         # Dev / unconfigured mode: never pretend it was delivered
         if provider == "console" or current_app.config.get("TESTING"):
-            current_app.logger.info("[SMS OUTBOX] to %s: %s", to, message)
+            # Never log the text: it carries temporary passwords and OTPs.
+            current_app.logger.info("[SMS OUTBOX] message for %s not sent (%d chars withheld)", to, len(message))
             return {
                 "sent": False,
                 "provider": "console",
