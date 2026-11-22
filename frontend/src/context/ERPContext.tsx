@@ -18,7 +18,7 @@ import { feeService } from '../services/feeService';
 import { studentService } from '../services/studentService';
 import { teacherService } from '../services/teacherService';
 import { downloadJSONBackup } from '../utils/export';
-import { withoutBorrowedDemoPhoto } from '../utils/avatar';
+import { withoutBorrowedDemoPhoto, personaForAccount } from '../utils/avatar';
 import { httpClient } from '../services/api/httpClient';
 import { syncEngine, CLIENT_ID as SYNC_CLIENT_ID, REMOTE_UPDATE_EVENT } from '../services/syncEngine';
 
@@ -400,6 +400,11 @@ export const ERPProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   const effectiveCurrentUser = useMemo<User>(() => {
     const base = currentUser;
     if (!base.referenceId) return base;
+    // A persona account (e.g. principal@ = Ritesh Singh) keeps the persona's
+    // name and photo rather than those of the record it is linked to. A fresh
+    // object each store change keeps consumers (e.g. the teacher dashboard's
+    // record lookup) re-evaluating once server data arrives.
+    if (personaForAccount(base.email, base.role)) return { ...base };
 
     let entity: { fullName?: string; email?: string; phone?: string; avatar?: string; photoUrl?: string } | undefined;
 

@@ -8,7 +8,7 @@ import { INITIAL_ERP_DATA } from '../data/seedData';
 import { PERIOD_SLOTS } from '../utils/timetableConstants';
 import { schoolMigrationService } from './schoolMigrationService';
 import { httpClient } from './api/httpClient';
-import { syncEngine } from './syncEngine';
+import { syncEngine, announceRemoteUpdate } from './syncEngine';
 
 const STORAGE_KEY = 'nts_novalytix_school_erp_store_v1';
 
@@ -419,6 +419,8 @@ export class ERPStorage {
           current.institutions = Array.from(institutionMap.values());
         }
         this.set(current, false);
+        // Students/teachers just came from the server: let open pages re-read.
+        announceRemoteUpdate();
         return true;
       }
     } catch (err) {

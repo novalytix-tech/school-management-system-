@@ -11,6 +11,7 @@ import { studentService } from '../../services/studentService';
 import { teacherService } from '../../services/teacherService';
 import { Student, AdmissionApplication, Teacher } from '../../types';
 import { Pause, Play } from 'lucide-react';
+import { personaForAccount } from '../../utils/avatar';
 
 export interface DashboardWelcomeSectionProps {
   eyebrow?: string;
@@ -89,6 +90,13 @@ export const DashboardWelcomeSection: React.FC<DashboardWelcomeSectionProps> = (
   // Resolve Profile Photo, Name, Badge, and Subtitle strictly based on Role and Context
   let resolvedPhoto = profilePhoto || currentUser.photoUrl || '';
   let resolvedName = profileName || '';
+  // On a persona account (e.g. principal@ = Ritesh Singh) the user's own record
+  // is shown under the persona's name, matching the photo and the topbar.
+  const isPersona = !!personaForAccount(currentUser.email, currentRole);
+  const ownName = (rec: { id?: string; email?: string; fullName: string }) =>
+    isPersona && (rec.id === currentUser.referenceId || (rec.email || '').toLowerCase() === currentUser.email.toLowerCase())
+      ? currentUser.name
+      : rec.fullName;
   let resolvedMeta = profileSubtitle || '';
   let resolvedBadge = badgeLabel || '';
 
@@ -113,7 +121,7 @@ export const DashboardWelcomeSection: React.FC<DashboardWelcomeSectionProps> = (
   }
   // 3. Explicit Teacher passed
   else if (teacher) {
-    resolvedName = resolvedName || teacher.fullName;
+    resolvedName = resolvedName || ownName(teacher);
     resolvedMeta = resolvedMeta || `${teacher.designation || 'Faculty'} • Staff #${teacher.staffId}`;
     resolvedPhoto = resolvedPhoto || teacherService.getTeacherPhoto(teacher);
     resolvedBadge = resolvedBadge || 'Faculty Profile';
@@ -122,16 +130,19 @@ export const DashboardWelcomeSection: React.FC<DashboardWelcomeSectionProps> = (
   else if (currentRole === 'student') {
     const studentUser =
       (currentUser.referenceId ? studentService.getById(currentUser.referenceId) : null) ||
-      studentService.getAll().find(s => s.fullName.toLowerCase() === currentUser.name.toLowerCase()) ||
-      studentService.getAll()[0];
+      studentService.getAll().find(s => s.fullName.toLowerCase() === currentUser.name.toLowerCase());
+    // No fallback to another student's record: an unmatched account shows its own name only.
 
     if (studentUser) {
-      resolvedName = resolvedName || studentUser.fullName;
+      resolvedName = resolvedName || ownName(studentUser);
       resolvedMeta =
         resolvedMeta ||
         `Class ${studentUser.className || ''}${studentUser.section ? ` (${studentUser.section})` : ''} • Roll #${studentUser.rollNo || studentUser.admissionNo}`;
       resolvedPhoto = resolvedPhoto || studentService.getStudentPhoto(studentUser);
       resolvedBadge = resolvedBadge || 'Enrolled Student';
+    } else {
+      resolvedName = resolvedName || currentUser.name;
+      resolvedBadge = resolvedBadge || 'Student';
     }
   }
   // 5. Role: PARENT (Shows active Ward profile if available, else Parent profile)
@@ -157,11 +168,11 @@ export const DashboardWelcomeSection: React.FC<DashboardWelcomeSectionProps> = (
       teacherService.getAll().find(
         t => t.email.toLowerCase() === currentUser.email.toLowerCase() ||
              t.fullName.toLowerCase() === currentUser.name.toLowerCase()
-      ) ||
-      teacherService.getAll()[0];
+      );
+    // No fallback to another teacher's record (it would show someone else's profile).
 
     if (teacherUser) {
-      resolvedName = resolvedName || teacherUser.fullName;
+      resolvedName = resolvedName || ownName(teacherUser);
       resolvedMeta = resolvedMeta || `${teacherUser.designation || 'Faculty'} • Staff #${teacherUser.staffId}`;
       resolvedPhoto = resolvedPhoto || teacherService.getTeacherPhoto(teacherUser);
       resolvedBadge = resolvedBadge || 'Faculty Profile';

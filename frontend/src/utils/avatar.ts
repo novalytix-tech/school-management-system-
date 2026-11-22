@@ -7,8 +7,15 @@
 
 import { studentService } from '../services/studentService';
 import { teacherService } from '../services/teacherService';
-import { DEMO_USERS } from '../data/seedData';
+import { DEMO_USERS, PERSONA_ACCOUNTS } from '../data/seedData';
 import type { User, UserRole } from '../types';
+
+/** The persona a real sign-in account represents (see PERSONA_ACCOUNTS), if any. */
+export function personaForAccount(email: string | undefined, role?: UserRole): User | undefined {
+  const personaRole = email ? PERSONA_ACCOUNTS[email.trim().toLowerCase()] : undefined;
+  if (!personaRole || (role && role !== personaRole)) return undefined;
+  return DEMO_USERS[personaRole];
+}
 
 /**
  * Real accounts used to be stored with the demo persona's photo for their role
@@ -17,6 +24,8 @@ import type { User, UserRole } from '../types';
  */
 export function withoutBorrowedDemoPhoto<T extends Partial<User>>(user: T): T {
   if (!user.photoUrl) return user;
+  // A persona account legitimately carries its persona's photo.
+  if (personaForAccount(user.email, user.role)?.photoUrl === user.photoUrl) return user;
   const persona = Object.values(DEMO_USERS).find(d => d.photoUrl === user.photoUrl);
   if (persona && persona.id !== user.id) {
     return { ...user, photoUrl: undefined };

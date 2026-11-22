@@ -71,7 +71,7 @@ const keyOf = (collection: string, id: string) => `${collection}\u0000${id}`;
 /** Fired after data from the server (another device, or a conflict) lands in the store. */
 export const REMOTE_UPDATE_EVENT = 'nts_erp_remote_update';
 
-function announceRemoteUpdate(): void {
+export function announceRemoteUpdate(): void {
   if (typeof window === 'undefined') return;
   try { window.dispatchEvent(new CustomEvent(REMOTE_UPDATE_EVENT)); } catch { /* ignore */ }
 }

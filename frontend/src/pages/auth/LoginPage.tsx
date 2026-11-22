@@ -11,6 +11,7 @@ import { DEMO_USERS } from '../../data/seedData';
 import { httpClient } from '../../services/api/httpClient';
 import { ERPStorage } from '../../services/storage';
 import { ForgotPasswordModal } from '../../components/auth/ForgotPasswordModal';
+import { personaForAccount } from '../../utils/avatar';
 import { ForcePasswordChangeModal } from '../../components/auth/ForcePasswordChangeModal';
 import {
   BarChart3,
@@ -207,10 +208,14 @@ export const LoginPage: React.FC = () => {
 
         const role = (res.data.user.roles?.[0] as UserRole) || 'school_admin';
         const demoUser = DEMO_USERS[role] || DEMO_USERS.school_admin;
+        // The quick-login accounts are the named personas (Ritesh Singh, Sharad
+        // Bajpai Ji, Shakti Singh, Shivam Giri): show the persona's name/photo.
+        const persona = personaForAccount(res.data.user.email, role);
+        const displayName = persona?.name || res.data.user.full_name || res.data.user.username || demoUser.name;
         login(role, {
           ...demoUser,
           id: res.data.user.id || demoUser.id,
-          name: res.data.user.full_name || res.data.user.username || demoUser.name,
+          name: displayName,
           email: res.data.user.email || demoUser.email,
           role,
           phone: res.data.user.phone || demoUser.phone,
@@ -221,8 +226,8 @@ export const LoginPage: React.FC = () => {
           referenceId: res.data.user.reference_id || undefined,
           // The account's own picture (or none, so the avatar resolver picks this
           // person's own portrait) — never the demo persona's photo or initials.
-          photoUrl: res.data.user.avatar_url || undefined,
-          avatar: initialsOf(res.data.user.full_name || res.data.user.username || ''),
+          photoUrl: res.data.user.avatar_url || persona?.photoUrl || undefined,
+          avatar: initialsOf(displayName),
         });
         // After login() so the sync knows who is signed in (an admin's first
         // sync uploads data entered on this device).
@@ -235,7 +240,7 @@ export const LoginPage: React.FC = () => {
           return;
         }
 
-        addToast('success', `Signed In Successfully`, `Welcome back, ${res.data.user.full_name || res.data.user.username}!`);
+        addToast('success', `Signed In Successfully`, `Welcome back, ${displayName}!`);
         navigate('/');
         return;
       }

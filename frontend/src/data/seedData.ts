@@ -18,6 +18,18 @@ import {
   INITIAL_AWARD_CERTIFICATES,
 } from './awardsSeedData';
 
+/**
+ * Real sign-in accounts that ARE the named personas below (the quick-login
+ * accounts). Signing into one of these shows the persona's name and photo;
+ * every other account keeps its own identity and picture.
+ */
+export const PERSONA_ACCOUNTS: Record<string, 'school_admin' | 'teacher' | 'parent' | 'student'> = {
+  'principal@stxaviers.edu.in': 'school_admin', // Ritesh Singh
+  'ananya.sharma@stxaviers.edu.in': 'teacher', // Sharad Bajpai Ji
+  'vikram.patel@gmail.com': 'parent', // Shakti Singh
+  'shivam.giri@student.stxaviers.edu.in': 'student', // Shivam Giri
+};
+
 export const DEMO_USERS: Record<string, User> = {
   super_admin: {
     id: 'user-super-admin',
